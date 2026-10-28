@@ -61,11 +61,11 @@ function candidatesOf(line: string): Candidate[] {
       }
       marker = `${path[path.length - 1]}.`;
     } else {
-      // Copied slides often join the preceding item directly to an en/em dash (e.g. ":– At").
+      // Copied slides often join the preceding item directly to a dash (e.g. ":– At" or "states- attention").
       // Keep its following gap; repetition/context checks below still decide whether it is a list.
       if (/[–—−*+\-]/.test(raw) && !gap) continue;
-      // ASCII punctuation and the mathematical minus still require a preceding token boundary.
-      if (/[−*+\-]/.test(raw) && !anchored && !/[ \t]$/.test(before)) continue;
+      // Emphasis/operators and the mathematical minus still require a preceding token boundary.
+      if (/[−*+]/.test(raw) && !anchored && !/[ \t]$/.test(before)) continue;
       if (!anchored && /[·∙]/.test(raw) && /[A-Za-z0-9]/.test(left) && /[A-Za-z0-9]/.test(right) && !gap && !/[ \t]$/.test(before)) continue;
       // Ranges and arithmetic are not lists, even inside an otherwise confirmed list.
       if (!anchored && /[–—−+\-·∙]/.test(raw) && /\d/.test(left) && /\d/.test(right)) continue;
@@ -75,7 +75,7 @@ function candidatesOf(line: string): Candidate[] {
       context: `${left}\u0000${right}`, barePath, body: '',
       operandPair: /[–—−+\-]/.test(raw)
         && /^[A-Za-z]$/.test(before.trimEnd().split(/\s+/).at(-1) ?? '')
-        && /^[A-Za-z](?=[ \t–—]|$)/.test(after.trimStart()) });
+        && /^[A-Za-z](?=[ \t–—\-]|$)/.test(after.trimStart()) });
   }
   return candidates;
 }

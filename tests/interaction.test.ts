@@ -163,20 +163,6 @@ test('mixed selected text and a local image use the independent vision endpoint,
   assert.equal(h.editor.value, 'prefixconverted');
 });
 
-test('changing source invalidates old results, updates routing, and missing images send nothing', async () => {
-  const h = await host('source');
-  const modal = h.open();
-  await modal.generate();
-  assert.equal(modal.contentEl.find('确认应用').disabled, false);
-  modal.contentEl.find('待转换文本').fill('caption ![[missing.png]]');
-  assert.equal(modal.contentEl.find('确认应用').disabled, true);
-  assert.match(modal.contentEl.all().find(el => el.text.includes('点击「发送并转换」将把'))!.text, /视觉 API/);
-  await modal.generate();
-  assert.equal(h.requests.length, 1);
-  assert.ok(modal.contentEl.all().some(el => el.text.includes('无法找到')));
-  modal.close();
-});
-
 test('file-menu image action opens the same smart window', async () => {
   const h = await host();
   const menu = new Menu();

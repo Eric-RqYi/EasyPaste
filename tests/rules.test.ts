@@ -97,7 +97,27 @@ test('restores decoder slide bullets when typographic dashes touch the preceding
   assert.equal(convertRules(input, opts).text, expected.replace('has not', 'hasnot').replace('make the', 'makethe').replace('future tokens', 'futuretokens'));
 });
 
-for (const dash of ['–', '—']) {
+test('restores Transformer attention bullets glued to the preceding text while keeping Luong-style', () => {
+  const input = 'In Transformer attention:- the score function is bilinear (Luong-style) with separate linear projectionsfor the two interacting hidden states- attention scores must be scaled by √𝑑𝑘 (square root of the keydimensionality) to make their variance independent of dimensionality';
+  const expected = 'In Transformer attention:\n- the score function is bilinear (Luong-style) with separate linear projections for the two interacting hidden states\n- attention scores must be scaled by √𝑑𝑘 (square root of the keydimensionality) to make their variance independent of dimensionality';
+  assert.equal(clean(input), expected);
+  assert.equal(clean(expected), expected);
+  const opts = options(); opts.words = false;
+  assert.equal(convertRules(input, opts).text, expected.replace('projections for', 'projectionsfor'));
+});
+
+test('restores attached hyphen bullets at existing and nested levels after word repair', () => {
+  assert.equal(clean('- First item- Second item'), '- First item\n- Second item');
+  assert.equal(clean('• Parent:- infor-\nmation and repre-sentation.- Next child• Next parent'),
+    '- Parent:\n    - information and representation.\n    - Next child\n- Next parent');
+  const opts = options(); opts.words = false;
+  for (const sign of ['+', '*', '−']) {
+    const input = `left${sign} First right${sign} Second`;
+    assert.equal(convertRules(input, opts).text, input);
+  }
+});
+
+for (const dash of ['-', '–', '—']) {
   test(`restores repeated ${dash} bullets without preceding whitespace while preserving ambiguous prose and ranges`, () => {
     assert.equal(clean(`• Parent:${dash} First item)${dash} Second item!• Next`),
       '- Parent:\n    - First item)\n    - Second item!\n- Next');
