@@ -1,0 +1,21 @@
+{
+  "name": "obsidian-easypaste",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Preview-first clipboard cleanup and AI OCR for Obsidian",
+  "scripts": {
+    "dev": "node esbuild.config.mjs --watch",
+    "build": "tsc --noEmit && node esbuild.config.mjs",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "check": "npm test && npm run build",
+    "release": "npm run check && node scripts/release.mjs"
+  },
+  "dependencies": { "diff": "^8.0.2" },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.25.0",
+    "obsidian": "latest",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}
