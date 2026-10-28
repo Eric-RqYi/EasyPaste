@@ -2,10 +2,11 @@ import { Editor, MarkdownView, Notice, Plugin, TFile, arrayBufferToBase64, reque
 import { convertRules } from './rules';
 import { EditTarget } from './target';
 import { isProtectedContext } from './context';
-import { convertWithApi, type ConversionMode } from './api';
+import { convertWithApi } from './api';
+import { conversionMode, resolveConversionInput } from './input';
 import { PreviewModal } from './preview';
 import { EasyPasteSettingTab } from './settings-tab';
-import { loadSettings, type EasyPasteSettings } from './settings';
+import { loadSettings, migrateApiSecrets, type EasyPasteSettings } from './settings';
 
 export default class EasyPaste extends Plugin {
   declare settings: EasyPasteSettings;
@@ -13,16 +14,16 @@ export default class EasyPaste extends Plugin {
   private saveQueue: Promise<void> = Promise.resolve();
   async onload(): Promise<void> {
     this.settings = loadSettings(await this.loadData());
+    if (migrateApiSecrets(this.settings, this.app.secretStorage)) await this.saveSettings();
     this.addSettingTab(new EasyPasteSettingTab(this.app, this));
-    const commands: { id: string; name: string; mode: 'rules' | ConversionMode }[] = [
+    const commands: { id: string; name: string; mode: 'rules' | 'smart' }[] = [
       { id: 'clean-selection', name: '离线清洗', mode: 'rules' },
-      { id: 'convert-selection', name: '智能转换', mode: 'text' },
-      { id: 'ocr-image', name: '图片 OCR → Markdown / LaTeX', mode: 'image' }
+      { id: 'convert-selection', name: '智能转换', mode: 'smart' }
     ];
     commands.forEach(command => this.addCommand({
       id: command.id, name: command.name,
       editorCheckCallback: (checking, editor, view) => {
-        const available = this.settings.shortcuts && !this.modal && Boolean(view.file) && (command.mode === 'image' || Boolean(editor.getSelection()));
+        const available = this.settings.shortcuts && !this.modal && Boolean(view.file) && (command.mode === 'smart' || Boolean(editor.getSelection()));
         if (available && !checking) {
           const active = this.app.workspace.getActiveViewOfType(MarkdownView);
           if (active) void this.manual(command.mode, editor, active);
@@ -33,8 +34,8 @@ export default class EasyPaste extends Plugin {
     this.registerEvent(this.app.workspace.on('editor-menu', (menu, editor, info) => {
       const view = this.app.workspace.getActiveViewOfType(MarkdownView);
       if (!view || view.editor !== editor || !info.file) return;
-      for (const command of commands) menu.addItem(item => item.setTitle(`EasyPaste：${command.name}`).setIcon(command.mode === 'image' ? 'scan-text' : 'wand-sparkles')
-        .setDisabled(Boolean(this.modal) || (command.mode !== 'image' && !editor.getSelection()))
+      for (const command of commands) menu.addItem(item => item.setTitle(`EasyPaste：${command.name}`).setIcon('wand-sparkles')
+        .setDisabled(Boolean(this.modal) || (command.mode === 'rules' && !editor.getSelection()))
         .onClick(() => void this.manual(command.mode, editor, view)));
     }));
     this.registerEvent(this.app.workspace.on('editor-paste', (event, editor, info) => {
@@ -59,8 +60,8 @@ export default class EasyPaste extends Plugin {
       if (!(file instanceof TFile) || !this.mime(file.extension)) return;
       const view = this.app.workspace.getActiveViewOfType(MarkdownView);
       if (!view?.file) return;
-      menu.addItem(item => item.setTitle('EasyPaste：识别图片并插入当前笔记').setIcon('scan-text').setDisabled(Boolean(this.modal))
-        .onClick(() => void this.manual('image', view.editor, view, file)));
+      menu.addItem(item => item.setTitle('EasyPaste：智能转换').setIcon('wand-sparkles').setDisabled(Boolean(this.modal))
+        .onClick(() => void this.manual('smart', view.editor, view, file)));
     }));
   }
   onunload(): void { this.modal?.close(); }
@@ -80,63 +81,72 @@ export default class EasyPaste extends Plugin {
     this.modal.open();
   }
   /** The first line already has the editor's prefix; indent subsequent lines accordingly. */
-  private atCursor(text: string, editor: Editor, insertion: boolean): string {
+  private atCursor(text: string, editor: Editor, insertion: boolean, pos = editor.getCursor('from')): string {
     if (!insertion || !text.includes('\n')) return text;
-    const pos = editor.getCursor('from');
     const prefix = editor.getLine(pos.line).slice(0, pos.ch);
     if (!/^[ \t]*$/.test(prefix) || !prefix.length) return text;
     return text.split('\n').map((line, i) => i && line ? prefix + line : line).join('\n');
   }
-  private async manual(mode: 'rules' | ConversionMode, editor: Editor, view: MarkdownView, imageFile?: TFile): Promise<void> {
+  private async manual(mode: 'rules' | 'smart', editor: Editor, view: MarkdownView, imageFile?: TFile): Promise<void> {
     if (this.modal) return;
     const target = this.target(editor, view);
     const selection = target.original;
-    if (mode !== 'image' && !selection) { new Notice('请先选中需要转换的文本。'); return; }
+    if (mode === 'rules' && !selection) { new Notice('请先选中需要转换的文本。'); return; }
     if (selection.length > 200000) { new Notice('请分段转换：单次最多 200,000 个字符。'); return; }
     if (mode === 'rules') {
       const result = convertRules(selection, this.settings.rules);
-      if (result.text === selection) { new Notice('未检测到需要清洗的模式。可添加词表或手动使用智能清洗。'); return; }
+      if (result.text === selection) { new Notice('未检测到可可靠修复的模式。专业术语可补充到额外词表，也可手动使用智能转换。'); return; }
       this.openPreview({ source: selection, result: result.text, reasons: result.reasons, apply: text => target.apply(text) });
       return;
     }
-    const providerId = mode === 'image' ? this.settings.visionProvider : this.settings.textProvider;
-    const savedProvider = this.settings.providers.find(p => p.id === providerId);
-    if (!savedProvider) { new Notice('请在 EasyPaste 设置中选择供应商。'); return; }
-    const provider = { ...savedProvider };
-    const model = mode === 'image' ? provider.visionModel : provider.textModel;
-    let image = '';
-    if (mode === 'image') {
-      // A selected local embed can be recognized without reading system clipboard.
-      const embed = /^!\[\[([^\]|]+)(?:\|[^\]]*)?\]\]$/.exec(selection.trim())
-        ?? /^!\[[^\]]*\]\(([^)]+)\)$/.exec(selection.trim());
-      if (!imageFile && embed) {
-        let path = embed[1];
-        try { path = decodeURIComponent(path.replace(/^<|>$/g, '')); } catch { /* use literal path */ }
-        imageFile = this.app.metadataCache.getFirstLinkpathDest(path, view.file?.path ?? '') ?? undefined;
-      }
-      if (imageFile) {
-        const mime = this.mime(imageFile.extension);
-        if (!mime || imageFile.stat.size > 10 * 1024 * 1024) { new Notice('请选择不超过 10 MB 的 PNG、JPEG、WebP 或 GIF 图片。'); return; }
-        try { image = `data:${mime};base64,${arrayBufferToBase64(await this.app.vault.readBinary(imageFile))}`; }
-        catch { new Notice('无法读取图片文件。'); return; }
-      }
-    }
     // Freeze non-secret request configuration for the lifetime of this preview.
+    const apis = { text: { ...this.settings.textApi }, image: { ...this.settings.imageApi } };
     const instructions = this.settings.extraInstructions;
     const timeoutSeconds = this.settings.timeoutSeconds;
+    const sourcePath = view.file?.path ?? '';
     this.openPreview({
-      source: selection, image: mode === 'image' ? image : undefined,
-      remoteLabel: `${provider.name} · ${provider.baseUrl} · ${model || '模型未配置'}`,
-      generate: async (signal, pickedImage) => convertWithApi({
-        provider, key: this.app.secretStorage.getSecret(provider.secretName) ?? '', mode,
-        input: mode === 'image' ? pickedImage! : selection, instructions, timeoutSeconds, signal,
-        request: async request => {
-          const response = await requestUrl(request);
-          return { status: response.status, json: response.status >= 200 && response.status < 300 ? response.json : null };
-        }
-      }),
-      apply: text => target.apply(this.atCursor(text, editor, mode === 'image' && !selection))
+      source: imageFile ? `![[${imageFile.path}]]` : selection,
+      remoteLabel: input => {
+        const mode = conversionMode(input);
+        const api = apis[mode];
+        return `${mode === 'image' ? '视觉 API（图片转换）' : '文本 API（智能转换）'}：${api.baseUrl || '地址未配置'} · ${api.model || '模型未配置'}`;
+      },
+      generate: async (signal, input) => {
+        const resolved = await resolveConversionInput(input, path => this.readImage(path, sourcePath));
+        const mode = conversionMode(resolved);
+        const api = apis[mode];
+        return convertWithApi({
+          api, key: this.app.secretStorage.getSecret(api.secretName) ?? '', mode,
+          input: resolved.text, images: resolved.images, instructions, timeoutSeconds, signal,
+          request: async request => {
+            const response = await requestUrl(request);
+            return { status: response.status, json: response.status >= 200 && response.status < 300 ? response.json : null };
+          }
+        });
+      },
+      apply: text => target.apply(this.atCursor(text, editor, !selection, target.from))
     });
+  }
+  private async readImage(path: string, sourcePath: string): Promise<string> {
+    if (/^https:\/\//i.test(path)) {
+      const url = new URL(path);
+      if (url.username || url.password) throw new Error('图片 URL 不能包含凭据。');
+      return url.toString();
+    }
+    const dataImage = /^data:image\/(?:png|jpeg|webp|gif);base64,([a-z\d+/]+=*)$/i.exec(path);
+    if (dataImage) {
+      const bytes = dataImage[1].length * 3 / 4 - (dataImage[1].match(/=+$/)?.[0].length ?? 0);
+      if (bytes > 10 * 1024 * 1024) throw new Error('图片不能超过 10 MB。');
+      return path;
+    }
+    if (/^[a-z][a-z\d+.-]*:/i.test(path)) throw new Error('请选择笔记库内图片或 HTTPS 图片链接。');
+    try { path = decodeURIComponent(path); } catch { /* use literal path */ }
+    const file = this.app.metadataCache.getFirstLinkpathDest(path, sourcePath);
+    if (!file) throw new Error('无法找到选中内容中的图片，请检查嵌入路径，或移除引用后添加图片文件。');
+    const mime = this.mime(file.extension);
+    if (!mime || !file.stat.size || file.stat.size > 10 * 1024 * 1024) throw new Error('请选择不超过 10 MB 的 PNG、JPEG、WebP 或 GIF 图片。');
+    try { return `data:${mime};base64,${arrayBufferToBase64(await this.app.vault.readBinary(file))}`; }
+    catch { throw new Error('无法读取图片文件。'); }
   }
   private mime(extension: string): string | undefined {
     return ({ png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif' } as Record<string, string>)[extension.toLowerCase()];

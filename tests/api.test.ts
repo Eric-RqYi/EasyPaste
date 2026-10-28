@@ -11,13 +11,14 @@ test('accepts provider roots and full endpoint without duplicate suffixes', () =
   assert.equal(completionUrl('http://localhost:1234/v1'), 'http://localhost:1234/v1/chat/completions');
   for (const url of ['http://public.example/v1', 'https://user:secret@example.com', 'https://example.com?key=x', 'file:///tmp/a']) assert.throws(() => completionUrl(url));
 });
-const provider = { ...DEFAULT_SETTINGS.providers[0], textModel: 'text-model', visionModel: 'vision-model' };
-const invoke = (request: Request, overrides = {}) => convertWithApi({ provider, key: 'test-key', mode: 'text', input: 'source', instructions: '', timeoutSeconds: 1, signal: new AbortController().signal, request, ...overrides });
+const api = { ...DEFAULT_SETTINGS.textApi, baseUrl: 'https://example.com/v1', model: 'user-model' };
+const invoke = (request: Request, overrides = {}) => convertWithApi({ api, key: 'test-key', mode: 'text', input: 'source', instructions: '', timeoutSeconds: 1, signal: new AbortController().signal, request, ...overrides });
 test('text request uses standard Chat Completions and no vision payload', async () => {
   const output = await invoke(async request => {
     assert.equal(request.headers.Authorization, 'Bearer test-key');
+    assert.equal(request.url, 'https://example.com/v1/chat/completions');
     const body = JSON.parse(request.body);
-    assert.equal(body.model, 'text-model');
+    assert.equal(body.model, 'user-model');
     assert.equal(body.messages[1].content, 'source');
     assert.equal(body.stream, false);
     assert.equal(body.temperature, undefined);
@@ -25,19 +26,36 @@ test('text request uses standard Chat Completions and no vision payload', async 
   });
   assert.equal(output, '**result**');
 });
-test('vision request uses image_url data URL and distinct model', async () => {
+test('vision request uses its own endpoint, key and model with an image_url payload', async () => {
+  const imageApi = { ...DEFAULT_SETTINGS.imageApi, baseUrl: 'https://vision.example.com/v1', model: 'vision-model' };
   await invoke(async request => {
+    assert.equal(request.url, 'https://vision.example.com/v1/chat/completions');
+    assert.equal(request.headers.Authorization, 'Bearer vision-key');
     const body = JSON.parse(request.body);
     assert.equal(body.model, 'vision-model');
     assert.equal(body.messages[1].content[1].image_url.url, 'data:image/png;base64,AA==');
     return { status: 200, json: { choices: [{ message: { content: '$x^2$' } }] } };
-  }, { mode: 'image', input: 'data:image/png;base64,AA==' });
+  }, { api: imageApi, key: 'vision-key', mode: 'image', input: 'data:image/png;base64,AA==' });
+});
+test('mixed text and multiple images are sent together to the vision API', async () => {
+  await invoke(async request => {
+    const body = JSON.parse(request.body);
+    assert.equal(body.model, 'vision-model');
+    const content = body.messages[1].content;
+    assert.match(content[0].text, /caption and !\[\[one.png\]\]/);
+    assert.deepEqual(content.slice(1), [
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } },
+      { type: 'image_url', image_url: { url: 'https://example.com/two.jpg' } }
+    ]);
+    return { status: 200, json: { choices: [{ message: { content: 'converted' } }] } };
+  }, { api: { ...api, model: 'vision-model' }, mode: 'image', input: 'caption and ![[one.png]]', images: ['data:image/png;base64,AA==', 'https://example.com/two.jpg'] });
 });
 test('invalid config and pre-cancel do not send data', async () => {
   let calls = 0;
   const request = async () => { calls++; throw new Error(); };
   await assert.rejects(invoke(request, { key: '' }), /API Key/);
-  await assert.rejects(invoke(request, { provider: { ...provider, textModel: '' } }), /模型 ID/);
+  await assert.rejects(invoke(request, { api: { ...api, model: '' } }), /Model Name/);
+  await assert.rejects(invoke(request, { api: { ...api, baseUrl: '' } }), /Base URL/);
   await assert.rejects(invoke(request, { signal: AbortSignal.abort() }), /取消/);
   assert.equal(calls, 0);
 });

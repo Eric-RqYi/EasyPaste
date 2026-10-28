@@ -1,0 +1,80 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { DEFAULT_SETTINGS, loadSettings, migrateApiSecrets } from '../src/settings';
+
+const text = { id: 'text', baseUrl: 'https://text.example/v1', textModel: 'text-model', visionModel: '', secretName: 'old-text-key' };
+const vision = { id: 'vision', baseUrl: 'https://vision.example/v1', textModel: '', visionModel: 'vision-model', secretName: 'old-vision-key' };
+
+test('fresh settings have independent blank API configurations', () => {
+  const settings = loadSettings(null);
+  assert.deepEqual(settings.textApi, { baseUrl: '', model: '', secretName: 'easypaste-text-api' });
+  assert.deepEqual(settings.imageApi, { baseUrl: '', model: '', secretName: 'easypaste-image-api' });
+  settings.textApi.model = 'changed';
+  assert.equal(settings.imageApi.model, '');
+  assert.equal(DEFAULT_SETTINGS.textApi.model, '');
+});
+
+test('migration retains each selected endpoint, model and secret reference', () => {
+  const settings = loadSettings({ providers: [vision, text], textProvider: 'text', visionProvider: 'vision' });
+  assert.deepEqual(settings.textApi, { baseUrl: text.baseUrl, model: 'text-model', secretName: 'old-text-key' });
+  assert.deepEqual(settings.imageApi, { baseUrl: vision.baseUrl, model: 'vision-model', secretName: 'old-vision-key' });
+  for (const key of ['api', 'providers', 'textProvider', 'visionProvider']) assert.equal(key in settings, false);
+  assert.deepEqual(loadSettings(JSON.parse(JSON.stringify(settings))), settings);
+});
+
+test('migration retains distinct models when the old provider was shared', () => {
+  const shared = { ...text, visionModel: 'vision-model' };
+  const settings = loadSettings({ providers: [shared], textProvider: text.id, visionProvider: text.id });
+  assert.equal(settings.textApi.model, 'text-model');
+  assert.equal(settings.imageApi.model, 'vision-model');
+});
+
+test('migration falls back to a provider configured for the relevant mode', () => {
+  const custom = { ...text, id: 'custom-1' };
+  const settings = loadSettings({ providers: [vision, custom], textProvider: 'missing', visionProvider: 'missing' });
+  assert.equal(settings.textApi.model, 'text-model');
+  assert.equal(settings.imageApi.model, 'vision-model');
+  assert.deepEqual(loadSettings({ providers: [] }), DEFAULT_SETTINGS);
+});
+
+test('shared API configuration initializes both sections without sharing objects', () => {
+  const api = { baseUrl: text.baseUrl, model: 'shared-model', secretName: 'shared-secret' };
+  const settings = loadSettings({ api, providers: [text], textProvider: text.id });
+  assert.deepEqual(settings.textApi, api);
+  assert.deepEqual(settings.imageApi, api);
+  settings.imageApi.baseUrl = vision.baseUrl;
+  assert.equal(settings.textApi.baseUrl, text.baseUrl);
+});
+
+test('separate API settings take precedence, including intentionally cleared fields', () => {
+  const api = { baseUrl: '', model: '', secretName: 'saved-secret' };
+  const settings = loadSettings({ textApi: api, imageApi: { model: 'image-model' }, api: { model: 'old-model' } });
+  assert.deepEqual(settings.textApi, api);
+  assert.deepEqual(settings.imageApi, { ...DEFAULT_SETTINGS.imageApi, model: 'image-model' });
+});
+
+test('secret migration isolates both keys and persists without repeating the migration', () => {
+  const settings = loadSettings({ api: { baseUrl: text.baseUrl, model: 'shared-model', secretName: 'shared-secret' } });
+  const secrets = new Map([['shared-secret', 'test-key']]);
+  const storage = { getSecret: (name: string) => secrets.get(name) ?? null, setSecret: (name: string, key: string) => { secrets.set(name, key); } };
+  assert.equal(migrateApiSecrets(settings, storage), true);
+  assert.equal(storage.getSecret(settings.textApi.secretName), 'test-key');
+  assert.equal(storage.getSecret(settings.imageApi.secretName), 'test-key');
+  storage.setSecret(settings.textApi.secretName, 'changed-key');
+  assert.equal(storage.getSecret(settings.imageApi.secretName), 'test-key');
+  storage.setSecret(settings.imageApi.secretName, '');
+  assert.equal(storage.getSecret(settings.textApi.secretName), 'changed-key');
+  const saved = JSON.stringify(settings);
+  assert.equal(saved.includes('test-key'), false);
+  assert.equal(saved.includes('changed-key'), false);
+  assert.equal(migrateApiSecrets(loadSettings(JSON.parse(saved)), storage), false);
+});
+
+test('separate legacy secrets are migrated to the matching section', () => {
+  const settings = loadSettings({ providers: [text, vision], textProvider: text.id, visionProvider: vision.id });
+  const secrets = new Map([['old-text-key', 'text-key'], ['old-vision-key', 'vision-key']]);
+  const storage = { getSecret: (name: string) => secrets.get(name) ?? null, setSecret: (name: string, key: string) => { secrets.set(name, key); } };
+  migrateApiSecrets(settings, storage);
+  assert.equal(storage.getSecret(settings.textApi.secretName), 'text-key');
+  assert.equal(storage.getSecret(settings.imageApi.secretName), 'vision-key');
+});
