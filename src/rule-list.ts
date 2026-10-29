@@ -24,27 +24,30 @@ export function renderRuleList(root: HTMLElement, options: RuleOptions, changed:
   const render = () => {
     root.empty();
     pipeline.forEach((rule, index) => {
-      const card = root.createDiv({ cls: 'easypaste-rule' });
+      const card = root.createDiv({ cls: editable ? 'easypaste-rule easypaste-rule-editable' : 'easypaste-rule' });
       const head = card.createDiv({ cls: 'easypaste-rule-head' });
       const name = rule.kind === 'builtin' ? labels[rule.id][0] : rule.name || '自定义规则';
-      const handle = head.createEl('button', { cls: 'easypaste-drag-handle', attr: {
-        type: 'button', draggable: 'true', 'aria-label': `拖动排序：${name}；也可用上下方向键移动`
+      const handle: HTMLElement = (editable ? card : head).createEl(editable ? 'div' : 'button', {
+        cls: editable ? 'easypaste-drag-handle easypaste-drag-edge' : 'easypaste-drag-handle', attr: {
+        role: 'button', tabindex: '0', draggable: 'true', 'aria-label': `拖动排序：${name}；也可用上下方向键移动`
       } });
-      setIcon(handle, 'menu');
+      if (!editable) setIcon(handle, 'menu');
       handle.addEventListener('keydown', event => {
         if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
         event.preventDefault();
         const target = index + (event.key === 'ArrowUp' ? -1 : 1);
         move(rule.id, target);
-        root.querySelectorAll<HTMLButtonElement>('.easypaste-drag-handle')[Math.max(0, Math.min(pipeline.length - 1, target))]?.focus();
+        root.querySelectorAll<HTMLElement>('.easypaste-drag-handle')[Math.max(0, Math.min(pipeline.length - 1, target))]?.focus();
       });
       handle.addEventListener('dragstart', event => {
         dragged = rule.id;
-        card.addClass('easypaste-dragging');
         if (event.dataTransfer) {
           event.dataTransfer.effectAllowed = 'move';
           event.dataTransfer.setData('application/x-easypaste-rule', rule.id);
+          const rect = card.getBoundingClientRect();
+          event.dataTransfer.setDragImage(card, event.clientX - rect.left, event.clientY - rect.top);
         }
+        card.addClass('easypaste-dragging');
       });
       const clearDrop = () => card.removeClass('easypaste-drop-before', 'easypaste-drop-after');
       handle.addEventListener('dragend', () => {
@@ -96,14 +99,14 @@ export function renderRuleList(root: HTMLElement, options: RuleOptions, changed:
       if (!editable || rule.kind !== 'regex') return;
       row.addButton(b => b.setButtonText('删除').onClick(() => { pipeline.splice(index, 1); render(); changed(); }));
       new Setting(card).setName('规则名称').addText(t => t.setValue(rule.name).onChange(value => { rule.name = value; changed(); }));
-      const status = card.createEl('p');
+      new Setting(card).setName('匹配表达式').setDesc('JavaScript 正则语法，不要填写两侧的 /。')
+        .addTextArea(t => t.setValue(rule.pattern).onChange(value => { rule.pattern = value; validate(); changed(); }));
+      const status = card.createEl('p', { cls: 'easypaste-regex-status', attr: { role: 'status', 'aria-live': 'polite' } });
       const validate = () => {
         const error = regexError(rule.pattern, rule.flags);
         status.setText(error ? `规则无效，执行时跳过：${error}` : '正则表达式有效');
         status.toggleClass('easypaste-rule-error', !!error);
       };
-      new Setting(card).setName('匹配表达式').setDesc('JavaScript 正则语法，不要填写两侧的 /。')
-        .addTextArea(t => t.setValue(rule.pattern).onChange(value => { rule.pattern = value; validate(); changed(); }));
       new Setting(card).setName('替换文本').setDesc('支持 $1、$2、$<名称> 捕获组；\\n 换行、\\t 制表符、\\\\ 字面反斜杠；留空表示删除匹配内容。')
         .addTextArea(t => t.setValue(rule.replacement).onChange(value => { rule.replacement = value; changed(); }));
       new Setting(card).setName('匹配标志').setDesc('例如 g 全部替换、i 忽略大小写、m 多行、s 跨行。留空仅替换首处。')

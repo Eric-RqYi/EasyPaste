@@ -29,7 +29,7 @@ class Element {
   removeClass(...names: string[]) { this.className = this.className.split(' ').filter(name => !names.includes(name)).join(' '); }
   toggleClass(name: string, value: boolean) { if (value) this.addClass(name); else this.removeClass(name); }
   focus() {} scrollIntoView() {}
-  getBoundingClientRect() { return { top: 0, height: 100 }; }
+  getBoundingClientRect() { return { left: 0, top: 0, width: 600, height: 100 }; }
   contains(el: Element): boolean { return this.all().includes(el); }
   replaceChildren(...children: Element[]) { this.children = children; }
   get textContent(): string { return this.text + this.children.map(child => child.textContent).join(''); }
@@ -340,10 +340,10 @@ test('spelling target switches live, persists and respects protected words from 
   panel.querySelectorAll('input')[index].events.change(true);
   assert.equal(modal.contentEl.find('编辑转换结果').value, 'colour organise');
   panel = modal.modalEl.find('快速配置规则');
-  panel.find('英美拼写目标').fill('us');
+  panel.find('转换至：').fill('us');
   assert.equal(modal.contentEl.find('编辑转换结果').value, 'color organize');
   panel = modal.modalEl.find('快速配置规则');
-  panel.find('英美拼写目标').fill('gb');
+  panel.find('转换至：').fill('gb');
   const tab = h.plugin.settingTab; tab.display();
   tab.containerEl.find('拼写保护词').fill('color');
   assert.equal(modal.contentEl.find('编辑转换结果').value, 'color organise');
@@ -386,7 +386,7 @@ test('dragging rule handles changes the effective execution order and keyboard m
   let panel = modal.modalEl.find('快速配置规则');
   const cards = panel.querySelectorAll('.easypaste-rule');
   const handles = panel.querySelectorAll('.easypaste-drag-handle');
-  handles[1].events.dragstart({ dataTransfer: { setData() {} } });
+  handles[1].events.dragstart({ clientX: 10, clientY: 20, dataTransfer: { setData() {}, setDragImage() {} } });
   cards[0].events.drop({ clientY: 10, preventDefault() {} });
   assert.deepEqual(rules.pipeline!.slice(0, 2).map((rule: any) => rule.id), ['b', 'a']);
   assert.equal(modal.contentEl.find('编辑转换结果').value, 'BBB');
@@ -638,7 +638,7 @@ test('an already open composer reads the current text or image base prompt when 
     const modal = h.open();
     h.plugin.settingTab.display();
     const title = field === 'textApi' ? '智能转换' : '图片转换';
-    h.plugin.settingTab.containerEl.find(`${title}基础 Prompt`).fill('Updated after opening');
+    h.plugin.settingTab.containerEl.find(`${title}Prompt`).fill('Updated after opening');
     await modal.generate();
     assert.equal(JSON.parse(h.requests[0].body).messages[0].content, 'Updated after opening');
     modal.close();
@@ -761,4 +761,40 @@ test('Enter only belongs to the preview region; inputs and other controls keep n
   assert.equal(h.requests.length, 0);
   assert.equal(h.editor.value, 'prefixofthe');
   modal.close();
+});
+
+
+test('settings use a full-height edge handle, drag the entire card, and validate below the expression', async () => {
+  const h = await host('AAA');
+  const tab = h.plugin.settingTab;
+  tab.display();
+  const cards = tab.containerEl.querySelectorAll('.easypaste-rule');
+  const edge = cards[1].querySelector('.easypaste-drag-edge')!;
+  assert.ok(edge);
+  assert.equal(edge.tag, 'div');
+  assert.equal(edge.attributes.draggable, 'true');
+  assert.equal(edge.attributes.tabindex, '0');
+  assert.ok(cards[1].children.includes(edge));
+  assert.equal(cards[1].querySelector('.easypaste-rule-head')!.querySelector('.easypaste-drag-handle'), undefined);
+  let ghost: unknown[] = [];
+  edge.events.dragstart({ clientX: 12, clientY: 30, dataTransfer: {
+    setData() {}, setDragImage(...args: unknown[]) { ghost = args; }
+  } });
+  assert.deepEqual(ghost, [cards[1], 12, 30]);
+  const id = h.plugin.settings.rules.pipeline[1].id;
+  cards[0].events.drop({ clientY: 10, preventDefault() {} });
+  assert.equal(h.plugin.settings.rules.pipeline[0].id, id);
+  tab.containerEl.find('新增规则').click();
+  const regex = tab.containerEl.querySelectorAll('.easypaste-rule').at(-1)!;
+  const status = regex.querySelector('.easypaste-regex-status')!;
+  const patternIndex = regex.children.findIndex((el: Element) => el.textContent.includes('匹配表达式'));
+  assert.equal(regex.children[patternIndex + 1], status);
+  assert.ok(regex.children[patternIndex + 2].textContent.includes('替换文本'));
+  const pattern = regex.querySelectorAll('textarea')[1];
+  pattern.fill('[');
+  assert.ok(status.text.startsWith('规则无效'));
+  assert.ok(status.className.includes('easypaste-rule-error'));
+  pattern.fill('valid');
+  assert.equal(status.text, '正则表达式有效');
+  assert.ok(!status.className.includes('easypaste-rule-error'));
 });
