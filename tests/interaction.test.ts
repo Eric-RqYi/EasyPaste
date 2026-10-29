@@ -73,7 +73,11 @@ class Setting {
   addButton(callback: (button: Button) => void) { callback(new Button(this.settingEl)); return this; }
   addExtraButton(callback: (button: Button) => void) { callback(new Button(this.settingEl)); return this; }
   addText(callback: (text: any) => void) { return this.addTextArea(callback); }
-  addDropdown(callback: (text: any) => void) { return this.addTextArea(callback); }
+  addDropdown(callback: (dropdown: any) => void) {
+    const select = this.settingEl.createEl('select');
+    const dropdown = { selectEl: select, addOptions() { return this; }, setValue(value: string) { select.value = value; return this; }, onChange(fn: (value: string) => void) { select.events.input = () => fn(select.value); return this; } };
+    callback(dropdown); return this;
+  }
   addTextArea(callback: (text: any) => void) {
     const input = this.settingEl.createEl('textarea');
     const text = { inputEl: input, setPlaceholder() { return this; }, addOptions() { return this; }, setValue(value: string) { input.value = value; return this; }, onChange(fn: (value: string) => void) { input.events.input = () => fn(input.value); return this; } };
@@ -326,6 +330,49 @@ test('preview rule panel only toggles/reorders rules and regenerates from the or
   assert.equal(editor.value, 'of the');
 });
 
+test('spelling target switches live, persists and respects protected words from full settings', async () => {
+  const h = await host('color organize');
+  h.plugin.commands.find((command: any) => command.id === 'clean-selection').editorCheckCallback(false, h.editor, h.view);
+  const modal = h.plugin.modal as Modal;
+  let panel = modal.modalEl.find('快速配置规则');
+  const index = h.plugin.settings.rules.pipeline.findIndex((rule: any) => rule.id === 'spelling');
+  assert.equal(modal.contentEl.find('编辑转换结果').value, 'color organize');
+  panel.querySelectorAll('input')[index].events.change(true);
+  assert.equal(modal.contentEl.find('编辑转换结果').value, 'colour organise');
+  panel = modal.modalEl.find('快速配置规则');
+  panel.find('英美拼写目标').fill('us');
+  assert.equal(modal.contentEl.find('编辑转换结果').value, 'color organize');
+  panel = modal.modalEl.find('快速配置规则');
+  panel.find('英美拼写目标').fill('gb');
+  const tab = h.plugin.settingTab; tab.display();
+  tab.containerEl.find('拼写保护词').fill('color');
+  assert.equal(modal.contentEl.find('编辑转换结果').value, 'color organise');
+  await h.plugin.saveSettings();
+  assert.equal(h.getSavedSettings()?.rules.spelling, true);
+  assert.equal(h.getSavedSettings()?.rules.spellingTarget, 'gb');
+  assert.equal(h.getSavedSettings()?.rules.spellingProtectedWords, 'color');
+  assert.equal(h.requests.length, 0);
+  modal.close();
+});
+
+test('spelling-only changes trigger automatic paste preview and apply only after confirmation', async () => {
+  const h = await host();
+  h.plugin.settings.rules.words = h.plugin.settings.rules.lists = false;
+  h.plugin.settings.rules.spelling = true;
+  h.plugin.settings.rules.spellingTarget = 'us';
+  let prevented = false;
+  h.events['editor-paste']({ defaultPrevented: false, clipboardData: {
+    files: [], items: [], getData: () => 'colour organise practice'
+  }, preventDefault: () => { prevented = true; } }, h.editor, h.view);
+  assert.equal(prevented, true);
+  assert.equal(h.editor.value, 'prefix');
+  const modal = h.plugin.modal as Modal;
+  assert.equal(modal.contentEl.find('编辑转换结果').value, 'color organize practice');
+  assert.equal(h.requests.length, 0);
+  modal.contentEl.find('确认应用').click();
+  assert.equal(h.editor.value, 'prefixcolor organize practice');
+});
+
 test('dragging rule handles changes the effective execution order and keyboard moves also work', async () => {
   const h = await host('AAA');
   const rules = h.plugin.settings.rules;
@@ -438,14 +485,14 @@ test('failed LLM conversion preserves the editable rule result and enables confi
   assert.equal(h.editor.value, 'prefixof the');
 });
 
-test('full settings retain regex creation/editing/deletion while builtin rules only expose ordering and toggles', async () => {
+test('full settings retain regex editing and only expose the spelling builtin parameters', async () => {
   const h = await host('AAA');
   const tab = h.plugin.settingTab;
   tab.display();
   const initialCards = tab.containerEl.querySelectorAll('.easypaste-rule');
-  assert.equal(initialCards.length, 6);
-  assert.ok(initialCards.filter((_card: Element, index: number) => h.plugin.settings.rules.pipeline[index].kind === 'builtin').every((card: Element) => card.querySelectorAll('textarea').length === 0));
-  assert.equal(initialCards.filter((card: Element) => card.querySelectorAll('textarea').length > 0).length, 2);
+  assert.equal(initialCards.length, 7);
+  assert.ok(initialCards.filter((_card: Element, index: number) => h.plugin.settings.rules.pipeline[index].kind === 'builtin' && h.plugin.settings.rules.pipeline[index].id !== 'spelling').every((card: Element) => card.querySelectorAll('textarea').length === 0));
+  assert.equal(initialCards.filter((card: Element) => card.querySelectorAll('textarea').length > 0).length, 3);
   tab.containerEl.find('新增规则').click();
   const rule = h.plugin.settings.rules.pipeline!.at(-1);
   assert.equal(rule.kind, 'regex');
@@ -466,7 +513,7 @@ test('full settings retain regex creation/editing/deletion while builtin rules o
   assert.equal(modal.contentEl.find('编辑转换结果').value, 'CCC');
   card.find('删除').click();
   cards = tab.containerEl.querySelectorAll('.easypaste-rule');
-  assert.equal(cards.length, 6);
+  assert.equal(cards.length, 7);
   assert.equal(modal.contentEl.find('编辑转换结果').value, 'AAA');
   modal.close();
 });

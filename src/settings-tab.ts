@@ -59,11 +59,11 @@ export class EasyPasteSettingTab extends PluginSettingTab {
     }).addButton(b => b.setButtonText('清除').onClick(() => { this.app.secretStorage.setSecret(api.secretName, ''); this.display(); }));
     new Setting(root).setName('Model Name').setDesc(image ? '填写视觉模型名称或 ID。智能转换输入含图片时使用此配置（包含同时输入的文本）。' : '填写文本模型名称或 ID。智能转换输入为纯文本时使用此配置。')
       .addText(t => t.setPlaceholder('模型名称或 ID').setValue(api.model).onChange(async v => { api.model = v.trim(); await save(); }));
-    const promptSetting = new Setting(root).setName('基础 Prompt').setDesc('作为此功能的 system prompt，修改后在下次发送时生效。');
+    const promptSetting = new Setting(root).setName('Prompt').setDesc('作为此功能的 system prompt，修改后在下次发送时生效。');
     const promptPanel = root.createDiv('easypaste-prompt-editor');
     promptPanel.hidden = true;
     const promptInput = promptPanel.createEl('textarea', { attr: {
-      'aria-label': `${title}基础 Prompt`, rows: '12', spellcheck: 'false'
+      'aria-label': `${title}Prompt`, rows: '12', spellcheck: 'false'
     } });
     promptInput.value = api.prompt;
     promptInput.addEventListener('input', () => {

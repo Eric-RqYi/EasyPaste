@@ -9,4 +9,5 @@ for (const name of ['nspell', 'dictionary-en', 'dictionary-en-gb']) {
 }
 await copyFile('node_modules/is-buffer/LICENSE', `${dir}/LICENSE-is-buffer`);
 await copyFile('data/LICENSE-frequency', `${dir}/LICENSE-frequency`);
+await copyFile('data/LICENSE-spelling', `${dir}/LICENSE-spelling`);
 console.log(`Installable plugin: ${dir}`);

@@ -115,7 +115,7 @@ test('pipeline order and custom rules survive saving; missing builtins are resto
     { kind: 'builtin', id: 'lists' }
   ];
   const settings = loadSettings({ rules });
-  assert.deepEqual(settings.rules.pipeline?.map(rule => rule.id), ['lists', 'custom', 'words', 'joinWrappedLines', 'pasteIntoCallout']);
+  assert.deepEqual(settings.rules.pipeline?.map(rule => rule.id), ['lists', 'custom', 'words', 'spelling', 'joinWrappedLines', 'pasteIntoCallout']);
   assert.deepEqual(loadSettings(JSON.parse(JSON.stringify(settings))), settings);
 });
 

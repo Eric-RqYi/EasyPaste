@@ -6,12 +6,13 @@ export interface ApiSettings {
   secretName: string;
   prompt: string;
 }
-export type BuiltinRuleId = 'words' | 'lists' | 'joinWrappedLines' | 'pasteIntoCallout';
+export type SpellingTarget = 'us' | 'gb';
+export type BuiltinRuleId = 'words' | 'spelling' | 'lists' | 'joinWrappedLines' | 'pasteIntoCallout';
 export type CleanupRule = { kind: 'builtin'; id: BuiltinRuleId } | {
   kind: 'regex'; id: string; name: string; enabled: boolean;
   pattern: string; replacement: string; flags: string;
 };
-export const BUILTIN_RULE_ORDER: BuiltinRuleId[] = ['words', 'lists', 'joinWrappedLines', 'pasteIntoCallout'];
+export const BUILTIN_RULE_ORDER: BuiltinRuleId[] = ['words', 'spelling', 'lists', 'joinWrappedLines', 'pasteIntoCallout'];
 export const EXAMPLE_RULES: CleanupRule[] = [
   { kind: 'regex', id: 'example-slides-wrapper', name: '示例：移除 Google 幻灯片首尾星号', enabled: true,
     pattern: String.raw`^[ \t]*(?:\\?\*){2}[ \t]*\n(?:[ \t]*\n)*([\s\S]*?)\n(?:[ \t]*\n)*[ \t]*(?:\\?\*){2}[ \t]*(?=\n|$)`, replacement: '$1', flags: 'gm' },
@@ -32,6 +33,9 @@ export interface RuleOptions {
   examplesVersion?: number;
   lists: boolean;
   words: boolean;
+  spelling: boolean;
+  spellingTarget: SpellingTarget;
+  spellingProtectedWords: string;
   joinWrappedLines: boolean;
   pasteIntoCallout: boolean;
   indentSize: number;
@@ -51,7 +55,8 @@ export interface EasyPasteSettings {
 export const DEFAULT_SETTINGS: EasyPasteSettings = {
   autoPaste: true, shortcuts: true, maxAutoChars: 30000,
   rules: {
-    lists: true, words: true, joinWrappedLines: false, pasteIntoCallout: true, indentSize: 4,
+    lists: true, words: true, spelling: false, spellingTarget: 'gb', spellingProtectedWords: '',
+    joinWrappedLines: false, pasteIntoCallout: true, indentSize: 4,
     pipeline: [EXAMPLE_RULES[0], ...BUILTIN_RULE_ORDER.filter(id => id !== 'pasteIntoCallout').map(id => ({ kind: 'builtin' as const, id })), EXAMPLE_RULES[1], { kind: 'builtin', id: 'pasteIntoCallout' }],
     examplesVersion: 1,
     replacements: 'ofthe => of the\ninthe => in the\ntothe => to the\nforthe => for the\nandthe => and the\nfromthe => from the',
@@ -111,13 +116,19 @@ export function loadSettings(value: SavedSettings | null): EasyPasteSettings {
     } else continue;
     seen.add(rule.id);
   }
-  for (const id of BUILTIN_RULE_ORDER) if (!seen.has(id)) pipeline.push({ kind: 'builtin', id });
+  for (const id of BUILTIN_RULE_ORDER) if (!seen.has(id)) {
+    const afterWords = id === 'spelling' ? pipeline.findIndex(rule => rule.id === 'words') : -1;
+    pipeline.splice(afterWords < 0 ? pipeline.length : afterWords + 1, 0, { kind: 'builtin', id });
+  }
   if ((value?.rules?.examplesVersion ?? 0) < 1) {
     if (!seen.has(EXAMPLE_RULES[0].id)) pipeline.unshift(structuredClone(EXAMPLE_RULES[0]));
     if (!seen.has(EXAMPLE_RULES[1].id)) pipeline.push(structuredClone(EXAMPLE_RULES[1]));
   }
   result.rules.examplesVersion = 1;
   result.rules.pipeline = pipeline;
+  result.rules.spelling = result.rules.spelling === true;
+  result.rules.spellingTarget = result.rules.spellingTarget === 'us' ? 'us' : 'gb';
+  result.rules.spellingProtectedWords = typeof result.rules.spellingProtectedWords === 'string' ? result.rules.spellingProtectedWords : '';
   result.rules.indentSize = result.rules.indentSize === 2 ? 2 : 4;
   result.timeoutSeconds = Math.min(300, Math.max(10, Number(result.timeoutSeconds) || 90));
   result.maxAutoChars = Math.min(100000, Math.max(1000, Number(result.maxAutoChars) || 30000));

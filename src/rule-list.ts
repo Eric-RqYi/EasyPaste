@@ -3,6 +3,7 @@ import { regexError, type CleanupRule, type RuleOptions } from './settings';
 
 const labels = {
   words: ['英文断词与粘连词', '使用内置词典修复断词与粘连词。'],
+  spelling: ['英美拼写转换', '转换常见英美拼写'],
   lists: ['列表与缩进', '规范列表符号、层级与续行缩进。'],
   joinWrappedLines: ['连接普通段落硬换行', '连接相邻的非空文本段落。'],
   pasteIntoCallout: ['粘贴到标注内容', '在行首 > 后粘贴时，让后续行与空行继承引用前缀，保持在同一个标注框内。']
@@ -78,6 +79,20 @@ export function renderRuleList(root: HTMLElement, options: RuleOptions, changed:
           else rule.enabled = value;
           changed();
         }));
+      if (rule.kind === 'builtin' && rule.id === 'spelling') {
+        row.addDropdown(d => {
+          d.selectEl.setAttribute('aria-label', '转换至：');
+          d.addOptions({ gb: '英式', us: '美式' }).setValue(options.spellingTarget).onChange(value => {
+            options.spellingTarget = value === 'us' ? 'us' : 'gb';
+            changed();
+          });
+        });
+        if (editable) new Setting(card).setName('白名单').setDesc('可选，空格或换行分隔，忽略大小写。')
+          .addTextArea(t => {
+            t.inputEl.setAttribute('aria-label', '拼写保护词');
+            t.setValue(options.spellingProtectedWords).onChange(value => { options.spellingProtectedWords = value; changed(); });
+          });
+      }
       if (!editable || rule.kind !== 'regex') return;
       row.addButton(b => b.setButtonText('删除').onClick(() => { pipeline.splice(index, 1); render(); changed(); }));
       new Setting(card).setName('规则名称').addText(t => t.setValue(rule.name).onChange(value => { rule.name = value; changed(); }));

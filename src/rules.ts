@@ -1,5 +1,6 @@
 import { BUILTIN_RULE_ORDER, regexError, replacementText, type RuleOptions } from './settings';
 import { wordRepair } from './words';
+import { convertSpelling } from './spelling';
 import { markerOf, normalizeLists } from './lists';
 
 export interface RuleResult { text: string; reasons: string[] }
@@ -77,6 +78,10 @@ export function convertRules(input: string, options: RuleOptions, context?: Rule
         if (/^[A-Z]/.test(word)) return replacement[0].toUpperCase() + replacement.slice(1);
         return replacement;
       }), '拆分粘连单词');
+    }
+    if (rule.id === 'spelling') {
+      update(convertSpelling(text, options.spellingTarget, options.spellingProtectedWords),
+        options.spellingTarget === 'us' ? '统一明确的美式拼写' : '统一明确的英式拼写（-ise）');
     }
     if (rule.id === 'lists') {
       update(normalizeLists(text, options.indentSize), '规范列表符号、层级与续行缩进');

@@ -23,3 +23,36 @@ The generated `.generated/english.json` is ignored by git and recreated locally
 before tests, builds and watch mode. No data is downloaded by the build or plugin.
 To update the data, review the source and licenses, replace the file, and update
 the revision and checksum here and in the build script together.
+
+## Conservative US/GB spelling whitelist
+
+`spelling-variants.json` is an exported snapshot derived from ESDB:
+
+- Source: https://github.com/en-wl/wordlist/tree/1e5b7d3a72f47a71da5d28686c1dd4b397178485
+- Revision: `1e5b7d3a72f47a71da5d28686c1dd4b397178485`
+- Snapshot SHA-256: `06116ad631171f0c7a06d050c0720fb7a3015a253aa8ed53cac9867ba435f6f1`
+- Only general US/GB entries at ESDB size <= 60, variant level <= 1 are considered.
+- Preferred forms are joined by group and POS, retaining identity mappings from
+  other senses. Conflicting mappings, usage/definition notes, marked entries,
+  unsupported POS and non-reciprocal pairs are excluded at export time.
+- `scripts/build-spelling.mjs` checks the snapshot hash, limits explicit pairs to
+  `or/our` and `ize/ise` families (including derived forms), excludes risky forms
+  such as `prize/prise`, and rejects ambiguous table keys.
+- The resulting 1,640 pairs occupy 49,268 bytes in `.generated/spelling.json`.
+  Only that compact array is bundled. Runtime conversion does not import the
+  snapshot, database, Python tooling or the spelling engine.
+- Full upstream copyright and the modification notice are in `LICENSE-spelling`,
+  which is included in installable releases.
+
+Normal npm tests/builds need neither Python, network access nor ESDB. To refresh:
+
+1. Obtain the ESDB source at the exact revision above (review any revision change).
+2. In that source tree, run `python3 combine.py create-db scowl.db`.
+3. In EasyPaste, run `python3 scripts/export-spelling.py /path/to/scowl.db`.
+4. Review the changed pairs, revision, source notices and byte counts. Update the
+   pinned revision in the exporter and checksum in the build script when needed.
+5. Run `python3 -B tests/export_spelling_test.py` and `npm run check`.
+
+English `-ise` is a style preference: Oxford British `-ize` is also valid. There
+is no claim that every proper noun can be distinguished without context. Users
+can retain brand names or other spellings via the rule's protected-word list.
