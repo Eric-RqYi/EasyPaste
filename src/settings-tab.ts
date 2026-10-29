@@ -1,6 +1,7 @@
 import { App, Notice, PluginSettingTab, Setting } from 'obsidian';
 import type EasyPaste from './main';
 import type { ApiSettings } from './settings';
+import { renderRuleList } from './rule-list';
 import { completionUrl } from './api';
 
 export class EasyPasteSettingTab extends PluginSettingTab {
@@ -17,13 +18,9 @@ export class EasyPasteSettingTab extends PluginSettingTab {
       .addToggle(t => t.setValue(s.shortcuts).onChange(async v => { s.shortcuts = v; await save(); }));
     new Setting(root).setName('自动处理字符上限').setDesc('超出时保持 Obsidian 原生粘贴，可选中文本手动清洗。')
       .addText(t => t.setValue(String(s.maxAutoChars)).onChange(async v => { const n = Number(v); if (Number.isFinite(n) && n >= 1000 && n <= 100000) { s.maxAutoChars = n; await save(); } }));
-    new Setting(root).setName('离线规则').setHeading();
-    new Setting(root).setName('列表与缩进').setDesc('转换点号、破折号、数字/字母/罗马序号。相同缩进中不同符号推断为子列表，同一符号再次出现时回到原层级。')
-      .addToggle(t => t.setValue(s.rules.lists).onChange(async v => { s.rules.lists = v; await save(); }));
-    new Setting(root).setName('英文断词与粘连词').setDesc('使用内置英美拼写词典与词频离线修复，无需配置词表。歧义较大的内容保留原文，修改后先预览。')
-      .addToggle(t => t.setValue(s.rules.words).onChange(async v => { s.rules.words = v; await save(); }));
-    new Setting(root).setName('连接普通段落硬换行').setDesc('默认关闭。开启后将普通段落相邻非空行连为空格，诗歌、地址等内容请关闭。')
-      .addToggle(t => t.setValue(s.rules.joinWrappedLines).onChange(async v => { s.rules.joinWrappedLines = v; await save(); }));
+    const rulesHeading = new Setting(root).setName('离线规则').setHeading();
+    rulesHeading.settingEl.id = 'easypaste-rule-settings';
+    this.ruleSection(root.createDiv('easypaste-rules'));
     new Setting(root).setName('子列表缩进').addDropdown(d => d.addOptions({ '2': '2 个空格', '4': '4 个空格（推荐）' })
       .setValue(String(s.rules.indentSize)).onChange(async v => { s.rules.indentSize = Number(v); await save(); }));
     new Setting(root).setName('精确替换表').setDesc('可选。每行：粘连词 => 正确文本。优先于自动拆分与完整词保护，忽略大小写，保留首字母大写。')
@@ -37,6 +34,15 @@ export class EasyPasteSettingTab extends PluginSettingTab {
       .addText(t => t.setValue(String(s.timeoutSeconds)).onChange(async v => { const n = Number(v); if (n >= 10 && n <= 300) { s.timeoutSeconds = n; await save(); } }));
     new Setting(root).setName('补充格式要求').setDesc('仅发送到手动 API 转换，不影响本地规则。')
       .addTextArea(t => t.setValue(s.extraInstructions).onChange(async v => { s.extraInstructions = v; await save(); }).inputEl.rows = 4);
+  }
+  focusRules(): void {
+    this.containerEl.querySelector('#easypaste-rule-settings')?.scrollIntoView({ block: 'start' });
+  }
+  private ruleSection(root: HTMLElement): void {
+    root.createEl('p', { text: '规则从上到下执行。拖动左侧三横杠、按上下方向键或点击箭头可排序；代码、公式和链接等内容受到保护。' });
+    renderRuleList(root.createDiv(), this.plugin.settings.rules, () => {
+      void this.plugin.saveSettings().catch(() => new Notice('EasyPaste：规则保存失败，请重试。'));
+    }, true);
   }
   private apiSection(root: HTMLElement, title: string, api: ApiSettings, image: boolean): void {
     const save = () => this.plugin.saveSettings();

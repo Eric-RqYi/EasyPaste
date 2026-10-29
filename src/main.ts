@@ -4,7 +4,7 @@ import { EditTarget } from './target';
 import { isProtectedContext } from './context';
 import { convertWithApi } from './api';
 import { conversionMode, resolveConversionInput } from './input';
-import { PreviewModal } from './preview';
+import { PreviewModal, type PreviewOptions } from './preview';
 import { EasyPasteSettingTab } from './settings-tab';
 import { loadSettings, migrateApiSecrets, type EasyPasteSettings } from './settings';
 
@@ -12,10 +12,13 @@ export default class EasyPaste extends Plugin {
   declare settings: EasyPasteSettings;
   private modal?: PreviewModal;
   private saveQueue: Promise<void> = Promise.resolve();
+  private settingsListeners = new Set<() => void>();
+  private settingTab!: EasyPasteSettingTab;
   async onload(): Promise<void> {
     this.settings = loadSettings(await this.loadData());
     if (migrateApiSecrets(this.settings, this.app.secretStorage)) await this.saveSettings();
-    this.addSettingTab(new EasyPasteSettingTab(this.app, this));
+    this.settingTab = new EasyPasteSettingTab(this.app, this);
+    this.addSettingTab(this.settingTab);
     const commands: { id: string; name: string; mode: 'rules' | 'smart' }[] = [
       { id: 'clean-selection', name: '离线清洗', mode: 'rules' },
       { id: 'convert-selection', name: '智能转换', mode: 'smart' }
@@ -53,7 +56,9 @@ export default class EasyPaste extends Plugin {
       if (result.text === text) return;
       event.preventDefault();
       const target = this.target(editor, view);
-      this.openPreview({ source: text, result: this.atCursor(result.text, editor, true), reasons: result.reasons,
+      const insertionPosition = { ...target.from };
+      this.openPreview({ ...this.rulePreviewOptions(view.file?.path ?? '', value => this.atCursor(value, editor, true, insertionPosition)),
+        source: text, result: this.atCursor(result.text, editor, true, insertionPosition), reasons: result.reasons,
         apply: value => target.apply(value), pasteOriginal: () => target.apply(text) });
     }));
     this.registerEvent(this.app.workspace.on('file-menu', (menu, file) => {
@@ -68,6 +73,7 @@ export default class EasyPaste extends Plugin {
   saveSettings(): Promise<void> {
     // Serialize writes so rapid setting edits cannot persist out of order.
     const snapshot = structuredClone(this.settings);
+    this.settingsListeners.forEach(listener => listener());
     this.saveQueue = this.saveQueue.catch(() => {}).then(() => this.saveData(snapshot));
     return this.saveQueue;
   }
@@ -95,17 +101,48 @@ export default class EasyPaste extends Plugin {
     if (selection.length > 200000) { new Notice('请分段转换：单次最多 200,000 个字符。'); return; }
     if (mode === 'rules') {
       const result = convertRules(selection, this.settings.rules);
-      if (result.text === selection) { new Notice('未检测到可可靠修复的模式。专业术语可补充到额外词表，也可手动使用智能转换。'); return; }
-      this.openPreview({ source: selection, result: result.text, reasons: result.reasons, apply: text => target.apply(text) });
+      this.openPreview({ ...this.rulePreviewOptions(view.file?.path ?? ''), source: selection, result: result.text, reasons: result.reasons, apply: text => target.apply(text) });
       return;
     }
-    // Freeze non-secret request configuration for the lifetime of this preview.
+    this.openPreview({
+      ...this.smartPreviewOptions(view.file?.path ?? ''),
+      source: imageFile ? `![[${imageFile.path}]]` : selection,
+      apply: text => target.apply(this.atCursor(text, editor, !selection, target.from))
+    });
+  }
+  private rulePreviewOptions(sourcePath: string, format: (text: string) => string = text => text): Pick<PreviewOptions, 'rules' | 'generate' | 'remoteLabel'> {
+    const smart = this.smartPreviewOptions(sourcePath);
+    return {
+      ...smart,
+      generate: async (signal, input) => format(await smart.generate(signal, input)),
+      rules: {
+        get: () => this.settings.rules,
+        convert: source => {
+          const result = convertRules(source, this.settings.rules);
+          return { ...result, text: format(result.text) };
+        },
+        save: () => this.saveSettings(),
+        subscribe: listener => {
+          this.settingsListeners.add(listener);
+          return () => { this.settingsListeners.delete(listener); };
+        },
+        openSettings: () => {
+          // Obsidian's settings navigator is exposed by the host, outside App's public type.
+          const settings = (this.app as typeof this.app & { setting?: { open(): void; openTabById(id: string): void } }).setting;
+          if (!settings) { new Notice('请在 Obsidian 设置中打开 EasyPaste 的「离线规则」。'); return; }
+          settings.open();
+          settings.openTabById(this.manifest.id);
+          this.settingTab.focusRules();
+        }
+      }
+    };
+  }
+  private smartPreviewOptions(sourcePath: string): Required<Pick<PreviewOptions, 'generate' | 'remoteLabel'>> {
+    // Freeze request configuration for the lifetime of this preview.
     const apis = { text: { ...this.settings.textApi }, image: { ...this.settings.imageApi } };
     const instructions = this.settings.extraInstructions;
     const timeoutSeconds = this.settings.timeoutSeconds;
-    const sourcePath = view.file?.path ?? '';
-    this.openPreview({
-      source: imageFile ? `![[${imageFile.path}]]` : selection,
+    return {
       remoteLabel: input => {
         const mode = conversionMode(input);
         const api = apis[mode];
@@ -123,9 +160,8 @@ export default class EasyPaste extends Plugin {
             return { status: response.status, json: response.status >= 200 && response.status < 300 ? response.json : null };
           }
         });
-      },
-      apply: text => target.apply(this.atCursor(text, editor, !selection, target.from))
-    });
+      }
+    };
   }
   private async readImage(path: string, sourcePath: string): Promise<string> {
     if (/^https:\/\//i.test(path)) {

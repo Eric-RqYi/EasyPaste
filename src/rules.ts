@@ -1,4 +1,4 @@
-import type { RuleOptions } from './settings';
+import { BUILTIN_RULE_ORDER, regexError, type RuleOptions } from './settings';
 import { wordRepair } from './words';
 import { markerOf, normalizeLists } from './lists';
 
@@ -34,37 +34,48 @@ export function convertRules(input: string, options: RuleOptions): RuleResult {
   let text = protectedText.text;
   const reasons = new Set<string>();
   const update = (next: string, reason: string) => { if (next !== text) reasons.add(reason); text = next; };
-  if (options.words) {
-    const repair = wordRepair(options.vocabulary);
-    update(text.replace(/([A-Za-z])\u00AD(?:[ \t]*\n[ \t]*)?(?=[A-Za-z])/g, '$1'), '还原软连字符断词');
-    update(text.replace(/(?<![\p{L}\p{N}_\-])(?<!\p{L}['’])([A-Za-z]+(?:-[A-Za-z]+)*)-[ \t]*\n[ \t]*([a-z][A-Za-z]*(?:-[A-Za-z]+)*)(?![\p{L}\p{N}_\-]|['’]\p{L})/gu,
-      (whole, left: string, right: string) => repair.hyphen(left, right, true) ?? whole), '还原词典确认的跨行断词');
-    update(text.replace(/(?<![\p{L}\p{N}_\-])(?<!\p{L}['’])([A-Za-z]+)-([a-z][A-Za-z]*)(?![\p{L}\p{N}_\-]|['’]\p{L})/gu,
-      (whole, left: string, right: string) => repair.hyphen(left, right, false) ?? whole), '还原词典确认的连字符断词');
-    const replacements = new Map<string, string>();
-    for (const line of options.replacements.split('\n')) {
-      const parts = line.split('=>').map(s => s.trim());
-      if (parts.length === 2 && /^[a-zA-Z]+$/.test(parts[0]) && parts[1]) replacements.set(parts[0].toLowerCase(), parts[1]);
+  const pipeline = options.pipeline ?? BUILTIN_RULE_ORDER.map(id => ({ kind: 'builtin' as const, id }));
+  for (const rule of pipeline) {
+    if (rule.kind === 'regex') {
+      if (!rule.enabled || regexError(rule.pattern, rule.flags)) continue;
+      // Process only unprotected spans so broad expressions cannot destroy Markdown sentinels.
+      const chunks = text.split(/(\uE000EPX*\d+\uE001)/g);
+      update(chunks.map((chunk, index) => index % 2 ? chunk : chunk.replace(new RegExp(rule.pattern, rule.flags), rule.replacement)).join(''), `正则替换：${rule.name}`);
+      continue;
     }
-    update(text.replace(/(?<![\p{L}\p{N}_\-])(?<!\p{L}['’])[A-Za-z]{3,64}(?![\p{L}\p{N}_\-]|['’]\p{L})/gu, (word, offset: number, source: string) => {
-      const lower = word.toLowerCase();
-      const explicit = replacements.get(lower);
-      const replacement = explicit ?? (followsLineHyphen(source, offset) ? null : repair.split(word));
-      if (!replacement) return word;
-      if (word === word.toUpperCase()) return replacement.toUpperCase();
-      if (/^[A-Z]/.test(word)) return replacement[0].toUpperCase() + replacement.slice(1);
-      return replacement;
-    }), '拆分粘连单词');
-  }
-  if (options.lists) {
-    update(normalizeLists(text, options.indentSize), '规范列表符号、层级与续行缩进');
-  }
-  if (options.joinWrappedLines) {
-    update(text.replace(/([^\n]+)\n(?=\S)/g, (whole, previous: string, offset: number, source: string) => {
-      const next = source.slice(offset + whole.length).split('\n')[0];
-      if (/^\s|^\uE000|^[#>|]|^[-*+] |^\d+[.)] /.test(previous) || markerOf(previous) || markerOf(next) || /^[#>|\uE000]/.test(next)) return whole;
-      return previous.trimEnd() + ' ';
-    }), '连接段落中的硬换行');
+    if (!options[rule.id]) continue;
+    if (rule.id === 'words') {
+      const repair = wordRepair(options.vocabulary);
+      update(text.replace(/([A-Za-z])\u00AD(?:[ \t]*\n[ \t]*)?(?=[A-Za-z])/g, '$1'), '还原软连字符断词');
+      update(text.replace(/(?<![\p{L}\p{N}_\-])(?<!\p{L}['’])([A-Za-z]+(?:-[A-Za-z]+)*)-[ \t]*\n[ \t]*([a-z][A-Za-z]*(?:-[A-Za-z]+)*)(?![\p{L}\p{N}_\-]|['’]\p{L})/gu,
+        (whole, left: string, right: string) => repair.hyphen(left, right, true) ?? whole), '还原词典确认的跨行断词');
+      update(text.replace(/(?<![\p{L}\p{N}_\-])(?<!\p{L}['’])([A-Za-z]+)-([a-z][A-Za-z]*)(?![\p{L}\p{N}_\-]|['’]\p{L})/gu,
+        (whole, left: string, right: string) => repair.hyphen(left, right, false) ?? whole), '还原词典确认的连字符断词');
+      const replacements = new Map<string, string>();
+      for (const line of options.replacements.split('\n')) {
+        const parts = line.split('=>').map(s => s.trim());
+        if (parts.length === 2 && /^[a-zA-Z]+$/.test(parts[0]) && parts[1]) replacements.set(parts[0].toLowerCase(), parts[1]);
+      }
+      update(text.replace(/(?<![\p{L}\p{N}_\-])(?<!\p{L}['’])[A-Za-z]{3,64}(?![\p{L}\p{N}_\-]|['’]\p{L})/gu, (word, offset: number, source: string) => {
+        const lower = word.toLowerCase();
+        const explicit = replacements.get(lower);
+        const replacement = explicit ?? (followsLineHyphen(source, offset) ? null : repair.split(word));
+        if (!replacement) return word;
+        if (word === word.toUpperCase()) return replacement.toUpperCase();
+        if (/^[A-Z]/.test(word)) return replacement[0].toUpperCase() + replacement.slice(1);
+        return replacement;
+      }), '拆分粘连单词');
+    }
+    if (rule.id === 'lists') {
+      update(normalizeLists(text, options.indentSize), '规范列表符号、层级与续行缩进');
+    }
+    if (rule.id === 'joinWrappedLines') {
+      update(text.replace(/([^\n]+)\n(?=\S)/g, (whole, previous: string, offset: number, source: string) => {
+        const next = source.slice(offset + whole.length).split('\n')[0];
+        if (/^\s|^\uE000|^[#>|]|^[-*+] |^\d+[.)] /.test(previous) || markerOf(previous) || markerOf(next) || /^[#>|\uE000]/.test(next)) return whole;
+        return previous.trimEnd() + ' ';
+      }), '连接段落中的硬换行');
+    }
   }
   const result = protectedText.restore(text).replace(/\n/g, newline);
   return { text: result, reasons: result === input ? [] : [...reasons] };

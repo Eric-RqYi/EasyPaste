@@ -78,3 +78,25 @@ test('separate legacy secrets are migrated to the matching section', () => {
   assert.equal(storage.getSecret(settings.textApi.secretName), 'text-key');
   assert.equal(storage.getSecret(settings.imageApi.secretName), 'vision-key');
 });
+
+test('legacy offline switches survive pipeline migration', () => {
+  const rules = { ...DEFAULT_SETTINGS.rules, words: false, lists: false, joinWrappedLines: true };
+  delete rules.pipeline;
+  const settings = loadSettings({ rules });
+  assert.deepEqual(settings.rules.pipeline, DEFAULT_SETTINGS.rules.pipeline);
+  assert.equal(settings.rules.words, false);
+  assert.equal(settings.rules.lists, false);
+  assert.equal(settings.rules.joinWrappedLines, true);
+});
+
+test('pipeline order and custom rules survive saving; missing builtins are restored once', () => {
+  const rules = structuredClone(DEFAULT_SETTINGS.rules);
+  rules.pipeline = [
+    { kind: 'builtin', id: 'lists' },
+    { kind: 'regex', id: 'custom', name: 'Example', enabled: true, pattern: '(a)', replacement: '$1b', flags: 'g' },
+    { kind: 'builtin', id: 'lists' }
+  ];
+  const settings = loadSettings({ rules });
+  assert.deepEqual(settings.rules.pipeline?.map(rule => rule.id), ['lists', 'custom', 'words', 'joinWrappedLines']);
+  assert.deepEqual(loadSettings(JSON.parse(JSON.stringify(settings))), settings);
+});

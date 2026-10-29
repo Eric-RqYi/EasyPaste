@@ -3,7 +3,19 @@ export interface ApiSettings {
   model: string;
   secretName: string;
 }
+export type BuiltinRuleId = 'words' | 'lists' | 'joinWrappedLines';
+export type CleanupRule = { kind: 'builtin'; id: BuiltinRuleId } | {
+  kind: 'regex'; id: string; name: string; enabled: boolean;
+  pattern: string; replacement: string; flags: string;
+};
+export const BUILTIN_RULE_ORDER: BuiltinRuleId[] = ['words', 'lists', 'joinWrappedLines'];
+export function regexError(pattern: string, flags: string): string | null {
+  if (!pattern) return '请输入匹配表达式';
+  try { new RegExp(pattern, flags); return null; }
+  catch (error) { return error instanceof Error ? error.message : '正则表达式无效'; }
+}
 export interface RuleOptions {
+  pipeline?: CleanupRule[];
   lists: boolean;
   words: boolean;
   joinWrappedLines: boolean;
@@ -25,6 +37,7 @@ export const DEFAULT_SETTINGS: EasyPasteSettings = {
   autoPaste: true, shortcuts: true, maxAutoChars: 30000,
   rules: {
     lists: true, words: true, joinWrappedLines: false, indentSize: 4,
+    pipeline: BUILTIN_RULE_ORDER.map(id => ({ kind: 'builtin', id })),
     replacements: 'ofthe => of the\ninthe => in the\ntothe => to the\nforthe => for the\nandthe => and the\nfromthe => from the',
     vocabulary: 'information\nprocessing\nlanguage\nlearning\nrepresentation\nunderstanding\ntransformation\nclassification\nrecognition\ncommunication\nimplementation\nconfiguration\nexperimental\nexperiment\nanalysis\nattention\nmechanism\nmodel\nmodels\nneural\nnetwork\nnetworks\nnatural\nspeech\ntext\nword\nwords\nembedding\nembeddings\nsemantic\nsyntax\nsyntactic\nphonological\nmorphological\ntokenization\nperformance\nevaluation\nprobability\ndistribution\ngeneralization\nregularization\noptimization'
   },
@@ -66,6 +79,20 @@ export function loadSettings(value: SavedSettings | null): EasyPasteSettings {
   };
   result.textApi = migrateApi(textApi, defaults.textApi, 'textModel', textProvider);
   result.imageApi = migrateApi(imageApi, defaults.imageApi, 'visionModel', visionProvider);
+  const seen = new Set<string>();
+  const pipeline: CleanupRule[] = [];
+  for (const rule of Array.isArray(result.rules.pipeline) ? result.rules.pipeline : []) {
+    if (!rule || typeof rule.id !== 'string' || seen.has(rule.id)) continue;
+    if (rule.kind === 'builtin' && BUILTIN_RULE_ORDER.includes(rule.id)) {
+      pipeline.push({ kind: 'builtin', id: rule.id });
+    } else if (rule.kind === 'regex' && !BUILTIN_RULE_ORDER.includes(rule.id as BuiltinRuleId)
+      && typeof rule.pattern === 'string' && typeof rule.replacement === 'string' && typeof rule.flags === 'string') {
+      pipeline.push({ ...rule, name: typeof rule.name === 'string' ? rule.name : '自定义规则', enabled: rule.enabled === true });
+    } else continue;
+    seen.add(rule.id);
+  }
+  for (const id of BUILTIN_RULE_ORDER) if (!seen.has(id)) pipeline.push({ kind: 'builtin', id });
+  result.rules.pipeline = pipeline;
   result.rules.indentSize = result.rules.indentSize === 2 ? 2 : 4;
   result.timeoutSeconds = Math.min(300, Math.max(10, Number(result.timeoutSeconds) || 90));
   result.maxAutoChars = Math.min(100000, Math.max(1000, Number(result.maxAutoChars) || 30000));

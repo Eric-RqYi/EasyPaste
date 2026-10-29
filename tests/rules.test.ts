@@ -219,3 +219,28 @@ test('list restoration respects disabled rules, CRLF and optional paragraph join
   assert.equal(convertRules('简介\r\n• infor-\r\nmation • representation 1) First 2) Second', opts).text,
     '简介\r\n- information\r\n- representation\r\n    1. First\r\n    2. Second');
 });
+
+test('regex rules run in order with builtins, captures and toggles', () => {
+  const opts = options();
+  const regex = { kind: 'regex' as const, id: 'custom', name: 'test', enabled: true, pattern: '(FOO)', replacement: '$1ofthe', flags: 'gi' };
+  opts.pipeline = [regex, { kind: 'builtin', id: 'words' }];
+  regex.replacement = 'ofthe';
+  assert.equal(convertRules('foo FOO', opts).text, 'of the of the');
+  opts.pipeline.reverse();
+  assert.equal(convertRules('foo FOO', opts).text, 'ofthe ofthe');
+  regex.pattern = '(foo)'; regex.replacement = '[$1]';
+  assert.equal(convertRules('foo FOO', opts).text, '[foo] [FOO]');
+  regex.enabled = false;
+  assert.equal(convertRules('foo FOO', opts).text, 'foo FOO');
+});
+
+test('invalid regex is skipped and broad regex cannot corrupt protected Markdown', () => {
+  const opts = options();
+  const regex = { kind: 'regex' as const, id: 'custom', name: 'test', enabled: true, pattern: '[', replacement: '', flags: 'g' };
+  opts.pipeline = [regex];
+  assert.deepEqual(convertRules('abc', opts), { text: 'abc', reasons: [] });
+  regex.pattern = '[\\s\\S]+';
+  assert.equal(convertRules('abc `code` def $math$ ghi', opts).text, '`code`$math$');
+  regex.flags = 'gg';
+  assert.equal(convertRules('abc', opts).text, 'abc');
+});
