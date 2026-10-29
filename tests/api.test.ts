@@ -13,6 +13,16 @@ test('accepts provider roots and full endpoint without duplicate suffixes', () =
 });
 const api = { ...DEFAULT_SETTINGS.textApi, baseUrl: 'https://example.com/v1', model: 'user-model' };
 const invoke = (request: Request, overrides = {}) => convertWithApi({ api, key: 'test-key', mode: 'text', input: 'source', instructions: '', timeoutSeconds: 1, signal: new AbortController().signal, request, ...overrides });
+test('system message uses the configured base prompt followed by temporary requirements', async () => {
+  for (const instructions of ['Use Chinese.\nKeep formulas.', '']) {
+    await invoke(async request => {
+      const body = JSON.parse(request.body);
+      assert.deepEqual(body.messages[0], { role: 'system', content: instructions ? `Custom base prompt\n\n${instructions}` : 'Custom base prompt' });
+      assert.equal(body.messages[1].content, 'source');
+      return { status: 200, json: { choices: [{ message: { content: 'result' } }] } };
+    }, { api: { ...api, prompt: 'Custom base prompt' }, instructions });
+  }
+});
 test('text request uses standard Chat Completions and no vision payload', async () => {
   const output = await invoke(async request => {
     assert.equal(request.headers.Authorization, 'Bearer test-key');

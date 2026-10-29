@@ -5,10 +5,28 @@ import { DEFAULT_SETTINGS, loadSettings, migrateApiSecrets } from '../src/settin
 const text = { id: 'text', baseUrl: 'https://text.example/v1', textModel: 'text-model', visionModel: '', secretName: 'old-text-key' };
 const vision = { id: 'vision', baseUrl: 'https://vision.example/v1', textModel: '', visionModel: 'vision-model', secretName: 'old-vision-key' };
 
+test('base prompts and temporary requirements persist independently, including intentional clearing', () => {
+  const settings = loadSettings({ textApi: { prompt: 'Text instructions' }, imageApi: { prompt: '' }, temporaryInstructions: '' });
+  assert.equal(settings.textApi.prompt, 'Text instructions');
+  assert.equal(settings.imageApi.prompt, '');
+  assert.equal(settings.temporaryInstructions, '');
+  assert.deepEqual(loadSettings(JSON.parse(JSON.stringify(settings))), settings);
+  assert.notEqual(DEFAULT_SETTINGS.textApi.prompt, DEFAULT_SETTINGS.imageApi.prompt);
+});
+
+test('legacy extra instructions migrate once into temporary requirements and clearing survives reload', () => {
+  const settings = loadSettings({ extraInstructions: 'Keep headings' });
+  assert.equal(settings.temporaryInstructions, 'Keep headings');
+  assert.equal('extraInstructions' in settings, false);
+  assert.equal(loadSettings({ extraInstructions: 'old', temporaryInstructions: '' }).temporaryInstructions, '');
+  settings.temporaryInstructions = '';
+  assert.equal(loadSettings(JSON.parse(JSON.stringify(settings))).temporaryInstructions, '');
+});
+
 test('fresh settings have independent blank API configurations', () => {
   const settings = loadSettings(null);
-  assert.deepEqual(settings.textApi, { baseUrl: '', model: '', secretName: 'easypaste-text-api' });
-  assert.deepEqual(settings.imageApi, { baseUrl: '', model: '', secretName: 'easypaste-image-api' });
+  assert.deepEqual(settings.textApi, DEFAULT_SETTINGS.textApi);
+  assert.deepEqual(settings.imageApi, DEFAULT_SETTINGS.imageApi);
   settings.textApi.model = 'changed';
   assert.equal(settings.imageApi.model, '');
   assert.equal(DEFAULT_SETTINGS.textApi.model, '');
@@ -16,8 +34,8 @@ test('fresh settings have independent blank API configurations', () => {
 
 test('migration retains each selected endpoint, model and secret reference', () => {
   const settings = loadSettings({ providers: [vision, text], textProvider: 'text', visionProvider: 'vision' });
-  assert.deepEqual(settings.textApi, { baseUrl: text.baseUrl, model: 'text-model', secretName: 'old-text-key' });
-  assert.deepEqual(settings.imageApi, { baseUrl: vision.baseUrl, model: 'vision-model', secretName: 'old-vision-key' });
+  assert.deepEqual(settings.textApi, { ...DEFAULT_SETTINGS.textApi, baseUrl: text.baseUrl, model: 'text-model', secretName: 'old-text-key' });
+  assert.deepEqual(settings.imageApi, { ...DEFAULT_SETTINGS.imageApi, baseUrl: vision.baseUrl, model: 'vision-model', secretName: 'old-vision-key' });
   for (const key of ['api', 'providers', 'textProvider', 'visionProvider']) assert.equal(key in settings, false);
   assert.deepEqual(loadSettings(JSON.parse(JSON.stringify(settings))), settings);
 });
@@ -40,8 +58,8 @@ test('migration falls back to a provider configured for the relevant mode', () =
 test('shared API configuration initializes both sections without sharing objects', () => {
   const api = { baseUrl: text.baseUrl, model: 'shared-model', secretName: 'shared-secret' };
   const settings = loadSettings({ api, providers: [text], textProvider: text.id });
-  assert.deepEqual(settings.textApi, api);
-  assert.deepEqual(settings.imageApi, api);
+  assert.deepEqual(settings.textApi, { ...DEFAULT_SETTINGS.textApi, ...api });
+  assert.deepEqual(settings.imageApi, { ...DEFAULT_SETTINGS.imageApi, ...api });
   settings.imageApi.baseUrl = vision.baseUrl;
   assert.equal(settings.textApi.baseUrl, text.baseUrl);
 });
@@ -49,7 +67,7 @@ test('shared API configuration initializes both sections without sharing objects
 test('separate API settings take precedence, including intentionally cleared fields', () => {
   const api = { baseUrl: '', model: '', secretName: 'saved-secret' };
   const settings = loadSettings({ textApi: api, imageApi: { model: 'image-model' }, api: { model: 'old-model' } });
-  assert.deepEqual(settings.textApi, api);
+  assert.deepEqual(settings.textApi, { ...DEFAULT_SETTINGS.textApi, ...api });
   assert.deepEqual(settings.imageApi, { ...DEFAULT_SETTINGS.imageApi, model: 'image-model' });
 });
 
@@ -97,6 +115,31 @@ test('pipeline order and custom rules survive saving; missing builtins are resto
     { kind: 'builtin', id: 'lists' }
   ];
   const settings = loadSettings({ rules });
-  assert.deepEqual(settings.rules.pipeline?.map(rule => rule.id), ['lists', 'custom', 'words', 'joinWrappedLines']);
+  assert.deepEqual(settings.rules.pipeline?.map(rule => rule.id), ['lists', 'custom', 'words', 'joinWrappedLines', 'pasteIntoCallout']);
   assert.deepEqual(loadSettings(JSON.parse(JSON.stringify(settings))), settings);
+});
+
+test('examples migrate once and remain edited or deleted after reload', () => {
+  const rules = structuredClone(DEFAULT_SETTINGS.rules);
+  delete rules.examplesVersion;
+  rules.pipeline = [{ kind: 'builtin', id: 'words' }];
+  const migrated = loadSettings({ rules });
+  assert.equal(migrated.rules.pipeline?.filter(rule => rule.kind === 'regex').length, 2);
+  const example = migrated.rules.pipeline!.find(rule => rule.kind === 'regex');
+  if (example?.kind === 'regex') example.pattern = 'edited';
+  assert.deepEqual(loadSettings(JSON.parse(JSON.stringify(migrated))), migrated);
+  migrated.rules.pipeline = migrated.rules.pipeline!.filter(rule => rule.kind !== 'regex');
+  assert.deepEqual(loadSettings(JSON.parse(JSON.stringify(migrated))), migrated);
+});
+
+
+test('older settings gain the enabled callout builtin once while retaining rule order', () => {
+  const rules = structuredClone(DEFAULT_SETTINGS.rules);
+  delete (rules as Partial<typeof rules>).pasteIntoCallout;
+  rules.pipeline = rules.pipeline!.filter(rule => rule.id !== 'pasteIntoCallout');
+  const migrated = loadSettings({ rules });
+  assert.equal(migrated.rules.pasteIntoCallout, true);
+  assert.equal(migrated.rules.pipeline!.at(-1)!.id, 'pasteIntoCallout');
+  migrated.rules.pasteIntoCallout = false;
+  assert.deepEqual(loadSettings(JSON.parse(JSON.stringify(migrated))), migrated);
 });

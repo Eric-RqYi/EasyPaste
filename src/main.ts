@@ -1,4 +1,4 @@
-import { Editor, MarkdownView, Notice, Plugin, TFile, arrayBufferToBase64, requestUrl } from 'obsidian';
+import { Editor, MarkdownView, Notice, Plugin, TFile, arrayBufferToBase64, htmlToMarkdown, requestUrl } from 'obsidian';
 import { convertRules } from './rules';
 import { EditTarget } from './target';
 import { isProtectedContext } from './context';
@@ -16,7 +16,9 @@ export default class EasyPaste extends Plugin {
   private settingTab!: EasyPasteSettingTab;
   async onload(): Promise<void> {
     this.settings = loadSettings(await this.loadData());
-    if (migrateApiSecrets(this.settings, this.app.secretStorage)) await this.saveSettings();
+    migrateApiSecrets(this.settings, this.app.secretStorage);
+    // Persist prompt defaults and migrations alongside the model configuration.
+    await this.saveSettings();
     this.settingTab = new EasyPasteSettingTab(this.app, this);
     this.addSettingTab(this.settingTab);
     const commands: { id: string; name: string; mode: 'rules' | 'smart' }[] = [
@@ -44,20 +46,31 @@ export default class EasyPaste extends Plugin {
     this.registerEvent(this.app.workspace.on('editor-paste', (event, editor, info) => {
       if (event.defaultPrevented || !this.settings.autoPaste || this.modal || !info.file) return;
       const data = event.clipboardData;
-      // Let Obsidian handle rich/image pastes unless this is a text-only cleanup.
+      // Image/file pastes stay with Obsidian; rich text is normalized before cleanup.
       if (!data || data.files.length || [...data.items].some(item => item.type.startsWith('image/'))) return;
-      const text = data.getData('text/plain');
+      let text = data.getData('text/plain');
+      const html = data.getData('text/html');
+      // Slides' plain text often omits the markers/blank lines created by HTML paste.
+      // Use Obsidian's converter so rules inspect the Markdown that would be inserted.
+      if (html && /<[a-z][\s\S]*>/i.test(html)) {
+        // Do not consume rich pastes containing images or embedded media.
+        if (/<(?:img|svg|video|audio|iframe|object|embed)\b/i.test(html)) return;
+        if (html.length > this.settings.maxAutoChars * 20) return;
+        try { text = htmlToMarkdown(html); }
+        catch { return; } // Keep native paste available if HTML conversion fails.
+      }
       if (!text || text.length > this.settings.maxAutoChars) return;
       const view = this.app.workspace.getActiveViewOfType(MarkdownView);
       if (!view || view.editor !== editor) return;
       const before = editor.getRange({ line: 0, ch: 0 }, editor.getCursor('from'));
       if (isProtectedContext(before)) return;
-      const result = convertRules(text, this.settings.rules);
+      const result = convertRules(text, this.settings.rules, { beforeCursor: before });
+      // Compare the complete pipeline output, including enabled custom regex rules.
       if (result.text === text) return;
       event.preventDefault();
       const target = this.target(editor, view);
       const insertionPosition = { ...target.from };
-      this.openPreview({ ...this.rulePreviewOptions(view.file?.path ?? '', value => this.atCursor(value, editor, true, insertionPosition)),
+      this.openPreview({ ...this.rulePreviewOptions(view.file?.path ?? '', value => this.atCursor(value, editor, true, insertionPosition), before),
         source: text, result: this.atCursor(result.text, editor, true, insertionPosition), reasons: result.reasons,
         apply: value => target.apply(value), pasteOriginal: () => target.apply(text) });
     }));
@@ -100,8 +113,9 @@ export default class EasyPaste extends Plugin {
     if (mode === 'rules' && !selection) { new Notice('请先选中需要转换的文本。'); return; }
     if (selection.length > 200000) { new Notice('请分段转换：单次最多 200,000 个字符。'); return; }
     if (mode === 'rules') {
-      const result = convertRules(selection, this.settings.rules);
-      this.openPreview({ ...this.rulePreviewOptions(view.file?.path ?? ''), source: selection, result: result.text, reasons: result.reasons, apply: text => target.apply(text) });
+      const before = editor.getRange({ line: 0, ch: 0 }, target.from);
+      const result = convertRules(selection, this.settings.rules, { beforeCursor: before });
+      this.openPreview({ ...this.rulePreviewOptions(view.file?.path ?? '', text => text, before), source: selection, result: result.text, reasons: result.reasons, apply: text => target.apply(text) });
       return;
     }
     this.openPreview({
@@ -110,15 +124,15 @@ export default class EasyPaste extends Plugin {
       apply: text => target.apply(this.atCursor(text, editor, !selection, target.from))
     });
   }
-  private rulePreviewOptions(sourcePath: string, format: (text: string) => string = text => text): Pick<PreviewOptions, 'rules' | 'generate' | 'remoteLabel'> {
+  private rulePreviewOptions(sourcePath: string, format: (text: string) => string = text => text, beforeCursor = ''): Pick<PreviewOptions, 'rules' | 'generate' | 'remoteLabel' | 'temporaryInstructions'> {
     const smart = this.smartPreviewOptions(sourcePath);
     return {
       ...smart,
-      generate: async (signal, input) => format(await smart.generate(signal, input)),
+      generate: async (signal, input, instructions) => format(await smart.generate(signal, input, instructions)),
       rules: {
         get: () => this.settings.rules,
         convert: source => {
-          const result = convertRules(source, this.settings.rules);
+          const result = convertRules(source, this.settings.rules, { beforeCursor });
           return { ...result, text: format(result.text) };
         },
         save: () => this.saveSettings(),
@@ -137,21 +151,24 @@ export default class EasyPaste extends Plugin {
       }
     };
   }
-  private smartPreviewOptions(sourcePath: string): Required<Pick<PreviewOptions, 'generate' | 'remoteLabel'>> {
-    // Freeze request configuration for the lifetime of this preview.
-    const apis = { text: { ...this.settings.textApi }, image: { ...this.settings.imageApi } };
-    const instructions = this.settings.extraInstructions;
-    const timeoutSeconds = this.settings.timeoutSeconds;
+  private smartPreviewOptions(sourcePath: string): Required<Pick<PreviewOptions, 'generate' | 'remoteLabel' | 'temporaryInstructions'>> {
+    const currentApi = (mode: 'text' | 'image') => mode === 'image' ? this.settings.imageApi : this.settings.textApi;
     return {
+      temporaryInstructions: {
+        get: () => this.settings.temporaryInstructions,
+        save: async value => { this.settings.temporaryInstructions = value; await this.saveSettings(); }
+      },
       remoteLabel: input => {
         const mode = conversionMode(input);
-        const api = apis[mode];
+        const api = currentApi(mode);
         return `${mode === 'image' ? '视觉 API（图片转换）' : '文本 API（智能转换）'}：${api.baseUrl || '地址未配置'} · ${api.model || '模型未配置'}`;
       },
-      generate: async (signal, input) => {
+      generate: async (signal, input, instructions) => {
         const resolved = await resolveConversionInput(input, path => this.readImage(path, sourcePath));
         const mode = conversionMode(resolved);
-        const api = apis[mode];
+        // Read the latest configuration at send time, including the editable base prompt.
+        const api = { ...currentApi(mode) };
+        const timeoutSeconds = this.settings.timeoutSeconds;
         return convertWithApi({
           api, key: this.app.secretStorage.getSecret(api.secretName) ?? '', mode,
           input: resolved.text, images: resolved.images, instructions, timeoutSeconds, signal,

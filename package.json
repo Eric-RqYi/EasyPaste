@@ -1,12 +1,14 @@
 {
   "name": "obsidian-easypaste",
-  "version": "0.1.0",
+  "version": "0.3.3",
   "private": true,
   "description": "Preview-first clipboard cleanup and AI OCR for Obsidian",
   "scripts": {
     "prepare:lexicon": "node scripts/build-lexicon.mjs",
     "dev": "npm run prepare:lexicon && node esbuild.config.mjs --watch",
     "build": "npm run prepare:lexicon && tsc --noEmit && node esbuild.config.mjs",
+    "build:bump": "npm version patch --no-git-tag-version && npm run build",
+    "version": "node version-bump.mjs",
     "test": "npm run prepare:lexicon && node --import tsx --test tests/*.test.ts",
     "check": "npm test && npm run build",
     "release": "npm run check && node scripts/release.mjs"

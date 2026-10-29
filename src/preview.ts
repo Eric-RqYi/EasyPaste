@@ -10,7 +10,11 @@ export interface PreviewOptions {
   result?: string;
   reasons?: string[];
   remoteLabel?: (input: ConversionInput) => string;
-  generate?: (signal: AbortSignal, input: ConversionInput) => Promise<string>;
+  generate?: (signal: AbortSignal, input: ConversionInput, instructions: string) => Promise<string>;
+  temporaryInstructions?: {
+    get: () => string;
+    save: (value: string) => Promise<void>;
+  };
   rules?: {
     get: () => RuleOptions;
     convert: (source: string) => RuleResult;
@@ -28,6 +32,8 @@ export class PreviewModal extends Modal {
   private images: { data: string; name: string }[] = [];
   private inputRoot?: HTMLElement;
   private sourceInput?: HTMLTextAreaElement;
+  private instructionsRoot?: HTMLElement;
+  private instructionsInput?: HTMLTextAreaElement;
   private disclosure?: HTMLElement;
   private reasonTags?: HTMLElement;
   private rendered!: HTMLElement;
@@ -51,6 +57,7 @@ export class PreviewModal extends Modal {
   private textarea!: HTMLTextAreaElement;
   private applyButton!: ButtonComponent;
   private generateButton?: ButtonComponent;
+  private enterButton?: ButtonComponent;
   private closed = false;
   private diffTimer?: ReturnType<typeof setTimeout>;
   private renderVersion = 0;
@@ -73,6 +80,7 @@ export class PreviewModal extends Modal {
     this.reasonTags = root.createDiv('easypaste-tags');
     this.setReasons(this.options.reasons ?? []);
     if (this.options.generate && !this.options.rules) this.buildInput(root);
+    if (this.options.generate && this.options.temporaryInstructions) this.buildInstructions(root);
     this.status = root.createEl('p', { cls: 'easypaste-status', attr: { role: 'status', 'aria-live': 'polite' } });
     const toolbar = root.createDiv('easypaste-preview-toolbar');
     const tabs = toolbar.createDiv('easypaste-tabs');
@@ -91,7 +99,9 @@ export class PreviewModal extends Modal {
         if (index === 1) this.renderMarkdown();
       });
     }
-    const body = root.createDiv('easypaste-preview-body');
+    const body = root.createDiv({ cls: 'easypaste-preview-body', attr: {
+      tabindex: '0', role: 'region', 'aria-label': '转换预览'
+    } });
     this.layout = body.createDiv('easypaste-preview-layout');
     this.originalPane = this.layout.createDiv('easypaste-pane easypaste-original-pane');
     this.originalPane.createDiv({ cls: 'easypaste-pane-title', text: '原文 · 红色删除线表示删除' });
@@ -121,7 +131,7 @@ export class PreviewModal extends Modal {
       configure.buttonEl.addClass('easypaste-configure-rules');
       configure.buttonEl.setAttribute('aria-expanded', 'false');
       configure.buttonEl.setAttribute('aria-controls', 'easypaste-preview-rules');
-      this.rulePanel = body.createEl('aside', { cls: 'easypaste-rule-panel', attr: { id: 'easypaste-preview-rules', 'aria-label': '快速配置规则' } });
+      this.rulePanel = this.modalEl.createEl('aside', { cls: 'easypaste-rule-panel', attr: { id: 'easypaste-preview-rules', 'aria-label': '快速配置规则' } });
       this.rulePanel.hidden = true;
       this.rulePanel.createEl('h3', { text: '规则配置' });
       this.rulePanel.createEl('p', { cls: 'easypaste-subtitle', text: '从上到下执行。更改规则会从原文重新生成结果，覆盖手动编辑。' });
@@ -154,24 +164,67 @@ export class PreviewModal extends Modal {
         new Notice('EasyPaste：已应用，可用撤销恢复');
       } catch (e) { this.showError(e); }
     });
+    footer.createEl('span', { cls: 'easypaste-enter-hint', text: '聚焦预览区后按 Enter 执行紫色按钮 · 输入框内 Enter 换行' });
+    body.addEventListener('keydown', event => {
+      // Only the preview region itself owns this shortcut; descendants keep native editing/activation.
+      if (event.target !== body) return;
+      if (event.key !== 'Enter' || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.isComposing || event.keyCode === 229 || this.composing || this.closed) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (!event.repeat) this.enterButton?.buttonEl.click();
+    }, true);
     this.textarea.value = this.result ?? '';
     this.updateInputState();
     this.drawDiff();
     if (this.sourceInput) this.sourceInput.focus();
-    else this.textarea.focus();
+    else body.focus();
   }
   private input(): ConversionInput {
     return { text: this.source, images: this.images.map(image => image.data) };
   }
   private updateInputState(): void {
-    if (this.options.remoteLabel) this.disclosure?.setText(`${this.options.remoteLabel(this.input())}。点击「${this.options.rules ? '使用 LLM 智能转换' : '发送并转换'}」才会发送原始输入内容。`);
+    if (this.options.remoteLabel) this.disclosure?.setText(`${this.options.remoteLabel(this.input())}。点击「${this.options.rules ? '使用 LLM 智能转换' : '发送并转换'}」或聚焦预览区后在其紫色高亮时按 Enter 才会发送原始输入内容。`);
     const busy = Boolean(this.controller) || this.pendingImageReads > 0;
     this.generateButton?.setDisabled(busy || (!this.source.trim() && !this.images.length));
     this.applyButton.setDisabled(busy || !this.result?.length);
+    this.enterButton = busy ? undefined
+      : this.options.rules || this.result !== undefined ? this.applyButton : this.generateButton;
+    if (this.enterButton?.buttonEl.disabled) this.enterButton = undefined;
+    for (const button of [this.generateButton, this.applyButton]) {
+      if (!button) continue;
+      const active = button === this.enterButton;
+      button.buttonEl.toggleClass('easypaste-enter-action', active);
+      button.buttonEl.setAttribute('aria-keyshortcuts', active ? 'Enter' : '');
+    }
     this.textarea.disabled = Boolean(this.controller);
     if (this.ruleList) this.ruleList.inert = Boolean(this.controller);
     this.inputRoot?.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLButtonElement>('input, textarea, button')
       .forEach(control => { control.disabled = Boolean(this.controller); });
+    this.instructionsRoot?.querySelectorAll<HTMLTextAreaElement | HTMLButtonElement>('textarea, button')
+      .forEach(control => { control.disabled = Boolean(this.controller); });
+  }
+  private buildInstructions(root: HTMLElement): void {
+    const zone = this.instructionsRoot = root.createDiv('easypaste-temporary-instructions');
+    const label = zone.createEl('label', { text: '临时要求（自动保存，下次继续使用）' });
+    const row = label.createDiv('easypaste-instructions-row');
+    const input = this.instructionsInput = row.createEl('textarea', { attr: {
+      'aria-label': '智能转换临时要求', rows: '2', placeholder: '例如：保留英文原文，只整理列表和公式。', spellcheck: 'false'
+    } });
+    input.value = this.options.temporaryInstructions!.get();
+    const save = () => {
+      void this.options.temporaryInstructions!.save(input.value).catch(() => {
+        if (!this.closed) this.showError(new Error('临时要求保存失败，请重试。'));
+      });
+    };
+    input.addEventListener('input', save);
+    const clear = new ButtonComponent(row).setIcon('x').setTooltip('清空临时要求').onClick(() => {
+      if (this.controller) return;
+      input.value = '';
+      save();
+      input.focus();
+    });
+    clear.buttonEl.setAttribute('aria-label', '清空临时要求');
   }
   private invalidateResult(): void {
     clearTimeout(this.diffTimer);
@@ -350,7 +403,7 @@ export class PreviewModal extends Modal {
     this.updateInputState();
     this.textarea.disabled = true;
     try {
-      const result = await this.options.generate(this.controller.signal, this.input());
+      const result = await this.options.generate(this.controller.signal, this.input(), this.instructionsInput?.value ?? '');
       if (this.closed) return;
       this.setResult(result);
       this.setReasons(['LLM 智能转换']);

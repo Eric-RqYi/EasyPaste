@@ -1,4 +1,4 @@
-import { BUILTIN_RULE_ORDER, regexError, type RuleOptions } from './settings';
+import { BUILTIN_RULE_ORDER, regexError, replacementText, type RuleOptions } from './settings';
 import { wordRepair } from './words';
 import { markerOf, normalizeLists } from './lists';
 
@@ -12,7 +12,7 @@ function followsLineHyphen(text: string, offset: number): boolean {
   return text[at] === '-' && /[A-Za-z]/.test(text[at - 1] ?? '');
 }
 /** Protect syntax whose spaces, hyphens and markers are meaningful. */
-export function protectMarkdown(input: string): { text: string; restore: (text: string) => string } {
+export function protectMarkdown(input: string): { text: string; restore: (text: string, continuationPrefix?: string) => string } {
   const saved: string[] = [];
   // Choose a sentinel absent from input; saved text is never processed by rules.
   let prefix = '\uE000EP';
@@ -25,14 +25,17 @@ export function protectMarkdown(input: string): { text: string; restore: (text: 
     });
   text = text.replace(/\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|(`+)[^\n]*?\1|(?<![\\$])\$(?!\$)[^\n$]+\$|!?\[[^\]\n]*\]\([^\n)]*\)|!?\[\[[^\]\n]+\]\]|https?:\/\/[^\s<>]+|<[^>\n]+>/g, keep);
   const token = new RegExp(`${prefix}(\\d+)\uE001`, 'g');
-  return { text, restore: value => value.replace(token, (_m, n: string) => saved[Number(n)]) };
+  return { text, restore: (value, continuationPrefix = '') => value.replace(token, (_m, n: string) => saved[Number(n)].replace(/\n/g, '\n' + continuationPrefix)) };
 }
 
-export function convertRules(input: string, options: RuleOptions): RuleResult {
+export interface RuleContext { beforeCursor: string }
+
+export function convertRules(input: string, options: RuleOptions, context?: RuleContext): RuleResult {
   const newline = input.includes('\r\n') && !/(?<!\r)\n/.test(input) ? '\r\n' : '\n';
   const protectedText = protectMarkdown(input.replace(/\r\n/g, '\n'));
   let text = protectedText.text;
   const reasons = new Set<string>();
+  let continuationPrefix = '';
   const update = (next: string, reason: string) => { if (next !== text) reasons.add(reason); text = next; };
   const pipeline = options.pipeline ?? BUILTIN_RULE_ORDER.map(id => ({ kind: 'builtin' as const, id }));
   for (const rule of pipeline) {
@@ -40,10 +43,19 @@ export function convertRules(input: string, options: RuleOptions): RuleResult {
       if (!rule.enabled || regexError(rule.pattern, rule.flags)) continue;
       // Process only unprotected spans so broad expressions cannot destroy Markdown sentinels.
       const chunks = text.split(/(\uE000EPX*\d+\uE001)/g);
-      update(chunks.map((chunk, index) => index % 2 ? chunk : chunk.replace(new RegExp(rule.pattern, rule.flags), rule.replacement)).join(''), `正则替换：${rule.name}`);
+      update(chunks.map((chunk, index) => index % 2 ? chunk : chunk.replace(new RegExp(rule.pattern, rule.flags), replacementText(rule.replacement))).join(''), `正则替换：${rule.name}`);
       continue;
     }
     if (!options[rule.id]) continue;
+    if (rule.id === 'pasteIntoCallout') {
+      const linePrefix = context?.beforeCursor.split('\n').at(-1) ?? '';
+      if (/^[ \t]*(?:>[ \t]*)+$/.test(linePrefix) && input.includes('\n')) {
+        continuationPrefix = linePrefix + (linePrefix.endsWith('>') ? ' ' : '');
+        update((linePrefix.endsWith('>') ? ' ' : '') + text.replace(/\n/g, '\n' + continuationPrefix), '粘贴到标注内容');
+        // Multiline protected code/math also need prefixes when their tokens are restored.
+        reasons.add('粘贴到标注内容');
+      }
+    }
     if (rule.id === 'words') {
       const repair = wordRepair(options.vocabulary);
       update(text.replace(/([A-Za-z])\u00AD(?:[ \t]*\n[ \t]*)?(?=[A-Za-z])/g, '$1'), '还原软连字符断词');
@@ -77,6 +89,6 @@ export function convertRules(input: string, options: RuleOptions): RuleResult {
       }), '连接段落中的硬换行');
     }
   }
-  const result = protectedText.restore(text).replace(/\n/g, newline);
+  const result = protectedText.restore(text, continuationPrefix).replace(/\n/g, newline);
   return { text: result, reasons: result === input ? [] : [...reasons] };
 }

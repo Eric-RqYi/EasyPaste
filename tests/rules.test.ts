@@ -244,3 +244,40 @@ test('invalid regex is skipped and broad regex cannot corrupt protected Markdown
   regex.flags = 'gg';
   assert.equal(convertRules('abc', opts).text, 'abc');
 });
+
+test('Slides examples remove paired standalone markers and blank lines between list items', () => {
+  assert.equal(clean('**\n\n- First\n\n- Second\n\n**'), '- First\n- Second');
+  assert.equal(clean('\\*\\*\n- First\n\n- Second\n\\*\\*'), '- First\n- Second');
+  assert.equal(clean('**bold**\n\nParagraph\n\n- First'), '**bold**\n\nParagraph\n\n- First');
+  assert.equal(clean('**\n- First'), '**\n- First');
+  assert.equal(clean('**\r\n- First\r\n\r\n- Second\r\n**'), '- First\r\n- Second');
+  assert.equal(clean('```\n**\n- First\n\n- Second\n**\n```'), '```\n**\n- First\n\n- Second\n**\n```');
+});
+
+test('replacement escape sequences create real whitespace and allow literal backslashes', () => {
+  const opts = options();
+  opts.pipeline = [{ kind: 'regex', id: 'escape', name: 'escape', enabled: true, pattern: '(x)', replacement: String.raw`$1\n\t\\n`, flags: 'g' }];
+  assert.equal(convertRules('x', opts).text, 'x\n\t\\n');
+});
+
+test('callout paste prefixes every continuation line including blank lines, nested quotes and CRLF', () => {
+  const opts = options();
+  assert.equal(convertRules('First\n\nSecond\n', opts, { beforeCursor: '> [!note]\n> ' }).text, 'First\n> \n> Second\n> ');
+  assert.equal(convertRules('First\nSecond', opts, { beforeCursor: '> >' }).text, ' First\n> > Second');
+  assert.equal(convertRules('First\r\n\r\nSecond', opts, { beforeCursor: '> ' }).text, 'First\r\n> \r\n> Second');
+  opts.pasteIntoCallout = false;
+  assert.equal(convertRules('First\n\nSecond', opts, { beforeCursor: '> ' }).text, 'First\n\nSecond');
+});
+
+test('callout paste also prefixes protected code and math without modifying their content', () => {
+  const source = '```\nofthe\n\ncode\n```\n\n$$\na\nb\n$$';
+  assert.equal(convertRules(source, options(), { beforeCursor: '> ' }).text,
+    '```\n> ofthe\n> \n> code\n> ```\n> \n> $$\n> a\n> b\n> $$');
+});
+
+test('callout rule needs a quote-only line prefix and does not change a single-line paste', () => {
+  for (const beforeCursor of ['', 'ordinary > ', '> existing text ', '> [!note]', '    ']) {
+    assert.equal(convertRules('First\n\nSecond', options(), { beforeCursor }).text, 'First\n\nSecond');
+  }
+  assert.equal(convertRules('First', options(), { beforeCursor: '> ' }).text, 'First');
+});
