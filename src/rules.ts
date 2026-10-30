@@ -1,3 +1,4 @@
+import { calloutPrefix } from './context';
 import { BUILTIN_RULE_ORDER, regexError, replacementText, type RuleOptions } from './settings';
 import { wordRepair } from './words';
 import { convertSpelling } from './spelling';
@@ -29,7 +30,7 @@ export function protectMarkdown(input: string): { text: string; restore: (text: 
   return { text, restore: (value, continuationPrefix = '') => value.replace(token, (_m, n: string) => saved[Number(n)].replace(/\n/g, '\n' + continuationPrefix)) };
 }
 
-export interface RuleContext { beforeCursor: string }
+export interface RuleContext { beforeCursor: string; lineBeforeCursor?: string }
 
 export function convertRules(input: string, options: RuleOptions, context?: RuleContext): RuleResult {
   const newline = input.includes('\r\n') && !/(?<!\r)\n/.test(input) ? '\r\n' : '\n';
@@ -49,10 +50,11 @@ export function convertRules(input: string, options: RuleOptions, context?: Rule
     }
     if (!options[rule.id]) continue;
     if (rule.id === 'pasteIntoCallout') {
-      const linePrefix = context?.beforeCursor.split('\n').at(-1) ?? '';
-      if (/^[ \t]*(?:>[ \t]*)+$/.test(linePrefix) && input.includes('\n')) {
+      const lineBeforeCursor = context?.lineBeforeCursor ?? context?.beforeCursor.split('\n').at(-1) ?? '';
+      const linePrefix = calloutPrefix(lineBeforeCursor);
+      if (linePrefix && input.includes('\n')) {
         continuationPrefix = linePrefix + (linePrefix.endsWith('>') ? ' ' : '');
-        update((linePrefix.endsWith('>') ? ' ' : '') + text.replace(/\n/g, '\n' + continuationPrefix), '粘贴到标注内容');
+        update((lineBeforeCursor === linePrefix && linePrefix.endsWith('>') ? ' ' : '') + text.replace(/\n/g, '\n' + continuationPrefix), '粘贴到标注内容');
         // Multiline protected code/math also need prefixes when their tokens are restored.
         reasons.add('粘贴到标注内容');
       }

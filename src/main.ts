@@ -61,16 +61,19 @@ export default class EasyPaste extends Plugin {
       }
       if (!text || text.length > this.settings.maxAutoChars) return;
       const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-      if (!view || view.editor !== editor) return;
-      const before = editor.getRange({ line: 0, ch: 0 }, editor.getCursor('from'));
+      // The paste event owns its editor; rendered/embedded editors may differ from view.editor.
+      if (!view || info.file !== view.file) return;
+      const position = { ...editor.getCursor('from') };
+      const lineBeforeCursor = editor.getLine(position.line).slice(0, position.ch);
+      const before = editor.getRange({ line: 0, ch: 0 }, position);
       if (isProtectedContext(before)) return;
-      const result = convertRules(text, this.settings.rules, { beforeCursor: before });
+      const result = convertRules(text, this.settings.rules, { beforeCursor: before, lineBeforeCursor });
       // Compare the complete pipeline output, including enabled custom regex rules.
       if (result.text === text) return;
       event.preventDefault();
-      const target = this.target(editor, view);
+      const target = this.target(editor, info);
       const insertionPosition = { ...target.from };
-      this.openPreview({ ...this.rulePreviewOptions(view.file?.path ?? '', value => this.atCursor(value, editor, true, insertionPosition), before),
+      this.openPreview({ ...this.rulePreviewOptions(view.file?.path ?? '', value => this.atCursor(value, editor, true, insertionPosition), before, lineBeforeCursor),
         source: text, result: this.atCursor(result.text, editor, true, insertionPosition), reasons: result.reasons,
         apply: value => target.apply(value), pasteOriginal: () => target.apply(text) });
     }));
@@ -90,9 +93,11 @@ export default class EasyPaste extends Plugin {
     this.saveQueue = this.saveQueue.catch(() => {}).then(() => this.saveData(snapshot));
     return this.saveQueue;
   }
-  private target(editor: Editor, view: MarkdownView): EditTarget {
-    const file = view.file;
-    return new EditTarget(editor, () => this.app.workspace.getActiveViewOfType(MarkdownView) === view && view.file === file);
+  private target(editor: Editor, owner: { file: TFile | null }): EditTarget {
+    const file = owner.file;
+    const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const activeFile = activeView?.file;
+    return new EditTarget(editor, () => this.app.workspace.getActiveViewOfType(MarkdownView) === activeView && activeView?.file === activeFile && owner.file === file);
   }
   private openPreview(options: Omit<ConstructorParameters<typeof PreviewModal>[1], 'closed'>): void {
     if (this.modal) { new Notice('请先完成或关闭当前 EasyPaste 预览。'); return; }
@@ -124,7 +129,7 @@ export default class EasyPaste extends Plugin {
       apply: text => target.apply(this.atCursor(text, editor, !selection, target.from))
     });
   }
-  private rulePreviewOptions(sourcePath: string, format: (text: string) => string = text => text, beforeCursor = ''): Pick<PreviewOptions, 'rules' | 'generate' | 'remoteLabel' | 'temporaryInstructions'> {
+  private rulePreviewOptions(sourcePath: string, format: (text: string) => string = text => text, beforeCursor = '', lineBeforeCursor?: string): Pick<PreviewOptions, 'rules' | 'generate' | 'temporaryInstructions'> {
     const smart = this.smartPreviewOptions(sourcePath);
     return {
       ...smart,
@@ -132,7 +137,7 @@ export default class EasyPaste extends Plugin {
       rules: {
         get: () => this.settings.rules,
         convert: source => {
-          const result = convertRules(source, this.settings.rules, { beforeCursor });
+          const result = convertRules(source, this.settings.rules, { beforeCursor, lineBeforeCursor });
           return { ...result, text: format(result.text) };
         },
         save: () => this.saveSettings(),
@@ -151,17 +156,12 @@ export default class EasyPaste extends Plugin {
       }
     };
   }
-  private smartPreviewOptions(sourcePath: string): Required<Pick<PreviewOptions, 'generate' | 'remoteLabel' | 'temporaryInstructions'>> {
+  private smartPreviewOptions(sourcePath: string): Required<Pick<PreviewOptions, 'generate' | 'temporaryInstructions'>> {
     const currentApi = (mode: 'text' | 'image') => mode === 'image' ? this.settings.imageApi : this.settings.textApi;
     return {
       temporaryInstructions: {
         get: () => this.settings.temporaryInstructions,
         save: async value => { this.settings.temporaryInstructions = value; await this.saveSettings(); }
-      },
-      remoteLabel: input => {
-        const mode = conversionMode(input);
-        const api = currentApi(mode);
-        return `${mode === 'image' ? '视觉 API（图片转换）' : '文本 API（智能转换）'}：${api.baseUrl || '地址未配置'} · ${api.model || '模型未配置'}`;
       },
       generate: async (signal, input, instructions) => {
         const resolved = await resolveConversionInput(input, path => this.readImage(path, sourcePath));

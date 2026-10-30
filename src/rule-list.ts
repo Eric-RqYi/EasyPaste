@@ -1,4 +1,4 @@
-import { Setting, setIcon } from 'obsidian';
+import { Setting } from 'obsidian';
 import { regexError, type CleanupRule, type RuleOptions } from './settings';
 
 const labels = {
@@ -24,14 +24,13 @@ export function renderRuleList(root: HTMLElement, options: RuleOptions, changed:
   const render = () => {
     root.empty();
     pipeline.forEach((rule, index) => {
-      const card = root.createDiv({ cls: editable ? 'easypaste-rule easypaste-rule-editable' : 'easypaste-rule' });
+      const card = root.createDiv({ cls: 'easypaste-rule easypaste-rule-edge' });
       const head = card.createDiv({ cls: 'easypaste-rule-head' });
       const name = rule.kind === 'builtin' ? labels[rule.id][0] : rule.name || '自定义规则';
-      const handle: HTMLElement = (editable ? card : head).createEl(editable ? 'div' : 'button', {
-        cls: editable ? 'easypaste-drag-handle easypaste-drag-edge' : 'easypaste-drag-handle', attr: {
+      const handle: HTMLElement = card.createEl('div', {
+        cls: 'easypaste-drag-handle easypaste-drag-edge', attr: {
         role: 'button', tabindex: '0', draggable: 'true', 'aria-label': `拖动排序：${name}；也可用上下方向键移动`
       } });
-      if (!editable) setIcon(handle, 'menu');
       handle.addEventListener('keydown', event => {
         if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
         event.preventDefault();

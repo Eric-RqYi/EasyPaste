@@ -275,9 +275,16 @@ test('callout paste also prefixes protected code and math without modifying thei
     '```\n> ofthe\n> \n> code\n> ```\n> \n> $$\n> a\n> b\n> $$');
 });
 
-test('callout rule needs a quote-only line prefix and does not change a single-line paste', () => {
-  for (const beforeCursor of ['', 'ordinary > ', '> existing text ', '> [!note]', '    ']) {
+test('callout rule needs a line-start quote prefix and does not change a single-line paste', () => {
+  for (const beforeCursor of ['', 'ordinary > ', '    ']) {
     assert.equal(convertRules('First\n\nSecond', options(), { beforeCursor }).text, 'First\n\nSecond');
   }
   assert.equal(convertRules('First', options(), { beforeCursor: '> ' }).text, 'First');
+});
+
+
+test('callout paste works after existing quote body and uses the explicit insertion-line snapshot', () => {
+  assert.equal(convertRules('First\n\nSecond', options(), { beforeCursor: '> existing text ' }).text, 'First\n> \n> Second');
+  assert.equal(convertRules('First\nSecond', options(), { beforeCursor: '> > existing text' }).text, 'First\n> > Second');
+  assert.equal(convertRules('First\nSecond', options(), { beforeCursor: 'Earlier document text', lineBeforeCursor: '> ' }).text, 'First\n> Second');
 });

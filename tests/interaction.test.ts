@@ -5,6 +5,8 @@ import { loadSettings, type EasyPasteSettings } from '../src/settings';
 
 // A small Obsidian host double runs the actual bundled command and modal code.
 class Element {
+  static focused?: Element;
+  parent?: Element;
   children: Element[] = [];
   attributes: Record<string, string> = {};
   events: Record<string, (event?: any) => void> = {};
@@ -20,6 +22,7 @@ class Element {
     el.className = typeof options === 'string' ? options : options.cls ?? '';
     el.text = options.text ?? '';
     el.attributes = options.attr ?? {};
+    el.parent = this;
     this.children.push(el);
     return el;
   }
@@ -28,9 +31,19 @@ class Element {
   addClass(...names: string[]) { this.className += ' ' + names.join(' '); }
   removeClass(...names: string[]) { this.className = this.className.split(' ').filter(name => !names.includes(name)).join(' '); }
   toggleClass(name: string, value: boolean) { if (value) this.addClass(name); else this.removeClass(name); }
-  focus() {} scrollIntoView() {}
+  focus() { Element.focused = this; } scrollIntoView() {}
   getBoundingClientRect() { return { left: 0, top: 0, width: 600, height: 100 }; }
-  contains(el: Element): boolean { return this.all().includes(el); }
+  contains(el: Element): boolean { return this === el || this.all().includes(el); }
+  closest(_selector: string): Element | null {
+    let element: Element | undefined = this;
+    while (element) {
+      if (['input', 'textarea', 'select', 'button', 'a'].includes(element.tag)
+        || ['button', 'textbox'].includes(element.attributes.role)
+        || (element.attributes.contenteditable !== undefined && element.attributes.contenteditable !== 'false')) return element;
+      element = element.parent;
+    }
+    return null;
+  }
   replaceChildren(...children: Element[]) { this.children = children; }
   get textContent(): string { return this.text + this.children.map(child => child.textContent).join(''); }
   empty() { this.children = []; this.text = ''; }
@@ -43,7 +56,8 @@ class Element {
   }
   querySelector(selector: string): Element | undefined { return this.all().find(el => selector.startsWith('#') ? (el as any).id === selector.slice(1) : el.className.split(' ').includes(selector.slice(1))); }
   find(label: string): Element {
-    const el = this.all().find(child => child.attributes['aria-label'] === label || child.text === label);
+    const el = this.all().find(child => child.attributes['aria-label'] === label)
+      ?? this.all().find(child => child.text === label);
     assert.ok(el, `Missing control: ${label}`);
     return el;
   }
@@ -85,6 +99,7 @@ class Setting {
   }
 }
 class Modal {
+  scope = { enter: (_event: any): any => {}, register: (_modifiers: string[], _key: string, callback: (event: any) => any) => { this.scope.enter = callback; } };
   contentEl = new Element(); modalEl = new Element();
   constructor(readonly app: unknown) {}
   setTitle() {} onOpen() {} onClose() {}
@@ -797,4 +812,105 @@ test('settings use a full-height edge handle, drag the entire card, and validate
   pattern.fill('valid');
   assert.equal(status.text, '正则表达式有效');
   assert.ok(!status.className.includes('easypaste-rule-error'));
+});
+
+
+test('preview side cards use edge handles and omit API disclosure and title subtitle', async () => {
+  const h = await host('ofthe');
+  h.plugin.commands.find((command: any) => command.id === 'clean-selection').editorCheckCallback(false, h.editor, h.view);
+  const modal = h.plugin.modal as Modal;
+  const panel = modal.modalEl.find('快速配置规则');
+  for (const card of panel.querySelectorAll('.easypaste-rule')) {
+    const edge = card.querySelector('.easypaste-drag-edge');
+    assert.ok(edge && card.children.includes(edge));
+    assert.equal(card.querySelector('.easypaste-rule-head')!.querySelector('.easypaste-drag-handle'), undefined);
+  }
+  assert.equal(modal.contentEl.querySelector('.easypaste-disclosure'), undefined);
+  assert.ok(!modal.contentEl.textContent.includes('本地规则转换'));
+  modal.close();
+});
+
+test('clicking readonly preview focuses it and modal-scope Enter applies exactly once', async () => {
+  const h = await host('ofthe');
+  h.plugin.commands.find((command: any) => command.id === 'clean-selection').editorCheckCallback(false, h.editor, h.view);
+  const modal = h.plugin.modal as Modal;
+  const preview = modal.contentEl.find('转换预览');
+  const original = modal.contentEl.querySelector('.easypaste-original-text')!;
+  const target = original.children[0] ?? original;
+  modal.contentEl.find('编辑转换结果').focus();
+  preview.events.click({ target });
+  assert.equal(Element.focused, preview);
+  const event = { key: 'Enter', target, defaultPrevented: false,
+    preventDefault() { this.defaultPrevented = true; }, stopPropagation() {} };
+  assert.equal(modal.scope.enter(event), false);
+  preview.events.keydown(event);
+  assert.equal(h.editor.value, 'prefixof the');
+});
+
+test('switching preview tabs restores preview focus and rendered descendants support Enter', async () => {
+  const h = await host('source');
+  const modal = h.open();
+  await modal.generate();
+  const preview = modal.contentEl.find('转换预览');
+  modal.contentEl.find('预览').click();
+  assert.equal(Element.focused, preview);
+  const rendered = modal.contentEl.querySelector('.easypaste-rendered')!;
+  const text = rendered.createSpan({ text: 'rendered result' });
+  modal.scope.enter({ key: 'Enter', target: text, preventDefault() {}, stopPropagation() {} });
+  assert.equal(h.editor.value, 'prefixconverted');
+});
+
+test('automatic callout paste reads the actual line in a multiline note, including existing body text', async () => {
+  for (const line of ['> ', '> already written: ', '> > ']) {
+    const h = await host();
+    const original = 'Intro\n\n> [!note] Title\n' + line;
+    h.editor.value = original;
+    const position = { line: 3, ch: line.length };
+    const offset = (pos: { line: number; ch: number }) => original.split('\n').slice(0, pos.line).reduce((n, value) => n + value.length + 1, 0) + pos.ch;
+    h.editor.getCursor = () => ({ ...position });
+    h.editor.getLine = (index = 0) => original.split('\n')[index];
+    h.editor.getRange = (from: any, to: any) => original.slice(offset(from), offset(to));
+    h.editor.replaceRange = (text: string, from: any, to: any) => { h.editor.value = original.slice(0, offset(from)) + text + original.slice(offset(to)); };
+    let prevented = false;
+    h.events['editor-paste']({ defaultPrevented: false, clipboardData: {
+      files: [], items: [], getData: (type: string) => type === 'text/plain' ? 'First\n\nSecond' : ''
+    }, preventDefault: () => { prevented = true; } }, h.editor, h.view);
+    assert.equal(prevented, true, line);
+    const continuation = line.startsWith('> >') ? '> > ' : '> ';
+    assert.equal(h.plugin.modal.contentEl.find('编辑转换结果').value, 'First\n' + continuation + '\n' + continuation + 'Second');
+    h.plugin.modal.contentEl.find('确认应用').click();
+    assert.equal(h.editor.value, original + 'First\n' + continuation + '\n' + continuation + 'Second');
+  }
+});
+
+test('callout paste uses the event editor even when the active view exposes a different editor object', async () => {
+  const h = await host();
+  const eventEditor = h.editor;
+  eventEditor.value = '> ';
+  eventEditor.from = eventEditor.to = 2;
+  h.view.editor = { ...eventEditor, value: 'main editor' };
+  const info = { file: h.view.file, editor: eventEditor };
+  let prevented = false;
+  h.events['editor-paste']({ defaultPrevented: false, clipboardData: {
+    files: [], items: [], getData: (type: string) => type === 'text/plain' ? 'First\nSecond' : ''
+  }, preventDefault: () => { prevented = true; } }, eventEditor, info);
+  assert.equal(prevented, true);
+  h.plugin.modal.contentEl.find('确认应用').click();
+  assert.equal(eventEditor.value, '> First\n> Second');
+  assert.equal(h.view.editor.value, 'main editor');
+});
+
+test('disabled callout rule and already handled paste do not intercept quote pastes', async () => {
+  for (const handled of [false, true]) {
+    const h = await host();
+    h.editor.value = '> ';
+    h.editor.from = h.editor.to = 2;
+    h.plugin.settings.rules.pasteIntoCallout = handled;
+    let prevented = false;
+    h.events['editor-paste']({ defaultPrevented: handled, clipboardData: {
+      files: [], items: [], getData: (type: string) => type === 'text/plain' ? 'First\nSecond' : ''
+    }, preventDefault: () => { prevented = true; } }, h.editor, h.view);
+    assert.equal(prevented, false);
+    assert.equal(h.plugin.modal, undefined);
+  }
 });

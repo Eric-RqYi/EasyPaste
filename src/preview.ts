@@ -9,7 +9,6 @@ export interface PreviewOptions {
   source: string;
   result?: string;
   reasons?: string[];
-  remoteLabel?: (input: ConversionInput) => string;
   generate?: (signal: AbortSignal, input: ConversionInput, instructions: string) => Promise<string>;
   temporaryInstructions?: {
     get: () => string;
@@ -34,7 +33,6 @@ export class PreviewModal extends Modal {
   private sourceInput?: HTMLTextAreaElement;
   private instructionsRoot?: HTMLElement;
   private instructionsInput?: HTMLTextAreaElement;
-  private disclosure?: HTMLElement;
   private reasonTags?: HTMLElement;
   private rendered!: HTMLElement;
   private pendingImageReads = 0;
@@ -72,11 +70,6 @@ export class PreviewModal extends Modal {
     this.modalEl.addClass('easypaste-modal');
     this.setTitle(this.options.rules ? 'EasyPaste：规则转换' : 'EasyPaste：智能转换');
     const root = this.contentEl;
-    root.createEl('p', { cls: 'easypaste-subtitle', text: this.options.rules
-      ? '本地规则转换 · 确认后写入笔记' : '转换结果先预览，确认后写入笔记。' });
-    if (this.options.remoteLabel) {
-      this.disclosure = root.createEl('p', { cls: 'easypaste-disclosure' });
-    }
     this.reasonTags = root.createDiv('easypaste-tags');
     this.setReasons(this.options.reasons ?? []);
     if (this.options.generate && !this.options.rules) this.buildInput(root);
@@ -97,6 +90,7 @@ export class PreviewModal extends Modal {
         tabButtons.forEach((b, n) => b.setAttribute('aria-pressed', String(n === index)));
         this.drawDiff();
         if (index === 1) this.renderMarkdown();
+        body.focus();
       });
     }
     const body = root.createDiv({ cls: 'easypaste-preview-body', attr: {
@@ -164,16 +158,26 @@ export class PreviewModal extends Modal {
         new Notice('EasyPaste：已应用，可用撤销恢复');
       } catch (e) { this.showError(e); }
     });
-    footer.createEl('span', { cls: 'easypaste-enter-hint', text: '聚焦预览区后按 Enter 执行紫色按钮 · 输入框内 Enter 换行' });
-    body.addEventListener('keydown', event => {
-      // Only the preview region itself owns this shortcut; descendants keep native editing/activation.
-      if (event.target !== body) return;
+    const isPreviewTarget = (target: EventTarget | null): target is HTMLElement => {
+      const element = target as HTMLElement | null;
+      return !!element && body.contains(element)
+        && !element.closest('input, textarea, select, button, a, [contenteditable]:not([contenteditable="false"]), [role="button"], [role="textbox"]');
+    };
+    body.addEventListener('click', event => {
+      if (isPreviewTarget(event.target)) body.focus({ preventScroll: true });
+    });
+    const handleEnter = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || !isPreviewTarget(event.target)) return;
       if (event.key !== 'Enter' || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return;
       if (event.isComposing || event.keyCode === 229 || this.composing || this.closed) return;
       event.preventDefault();
       event.stopPropagation();
       if (!event.repeat) this.enterButton?.buttonEl.click();
-    }, true);
+      return false;
+    };
+    // Obsidian routes shortcuts through the modal scope before DOM listeners.
+    this.scope.register([], 'Enter', handleEnter);
+    body.addEventListener('keydown', handleEnter, true);
     this.textarea.value = this.result ?? '';
     this.updateInputState();
     this.drawDiff();
@@ -184,7 +188,6 @@ export class PreviewModal extends Modal {
     return { text: this.source, images: this.images.map(image => image.data) };
   }
   private updateInputState(): void {
-    if (this.options.remoteLabel) this.disclosure?.setText(`${this.options.remoteLabel(this.input())}。点击「${this.options.rules ? '使用 LLM 智能转换' : '发送并转换'}」或聚焦预览区后在其紫色高亮时按 Enter 才会发送原始输入内容。`);
     const busy = Boolean(this.controller) || this.pendingImageReads > 0;
     this.generateButton?.setDisabled(busy || (!this.source.trim() && !this.images.length));
     this.applyButton.setDisabled(busy || !this.result?.length);
@@ -206,7 +209,7 @@ export class PreviewModal extends Modal {
   }
   private buildInstructions(root: HTMLElement): void {
     const zone = this.instructionsRoot = root.createDiv('easypaste-temporary-instructions');
-    const label = zone.createEl('label', { text: '临时要求（自动保存，下次继续使用）' });
+    const label = zone.createEl('label', { text: '智能转换临时要求' });
     const row = label.createDiv('easypaste-instructions-row');
     const input = this.instructionsInput = row.createEl('textarea', { attr: {
       'aria-label': '智能转换临时要求', rows: '2', placeholder: '例如：保留英文原文，只整理列表和公式。', spellcheck: 'false'

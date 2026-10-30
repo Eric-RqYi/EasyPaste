@@ -25,3 +25,9 @@ export function isProtectedContext(beforeCursor: string): boolean {
   const latex = beforeCursor.lastIndexOf('\\[') > beforeCursor.lastIndexOf('\\]') || last.lastIndexOf('\\(') > last.lastIndexOf('\\)');
   return yaml || Boolean(fence) || math || backticks.length % 2 === 1 || dollars.length % 2 === 1 || latex;
 }
+
+/** The quote prefix belongs to the current line, not to preceding callout text. */
+export function calloutPrefix(beforeCursor: string): string | null {
+  const line = beforeCursor.split('\n').at(-1)?.replace(/\r$/, '') ?? '';
+  return /^[ \t]*(?:>[ \t]*)+/.exec(line)?.[0] ?? null;
+}
