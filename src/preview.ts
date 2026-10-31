@@ -43,6 +43,7 @@ export class PreviewModal extends Modal {
   private editorPane!: HTMLElement;
   private originalPane!: HTMLElement;
   private renderedPane!: HTMLElement;
+  private previewBody!: HTMLElement;
   private layout!: HTMLElement;
   private rulePanel?: HTMLElement;
   private ruleList?: HTMLElement;
@@ -64,6 +65,14 @@ export class PreviewModal extends Modal {
     super(app);
     this.result = options.result;
     this.source = options.source;
+  }
+  open(): void {
+    super.open();
+    // Modal.open() focuses its first control after onOpen(), so set our
+    // initial focus only once the host has finished opening the modal.
+    const initialFocus = this.sourceInput && !this.source.trim() && !this.images.length
+      ? this.sourceInput : this.previewBody;
+    initialFocus.focus({ preventScroll: true });
   }
   onOpen(): void {
     this.renderer.load();
@@ -93,7 +102,7 @@ export class PreviewModal extends Modal {
         body.focus();
       });
     }
-    const body = root.createDiv({ cls: 'easypaste-preview-body', attr: {
+    const body = this.previewBody = root.createDiv({ cls: 'easypaste-preview-body', attr: {
       tabindex: '0', role: 'region', 'aria-label': '转换预览'
     } });
     this.layout = body.createDiv('easypaste-preview-layout');
@@ -148,7 +157,12 @@ export class PreviewModal extends Modal {
       try { this.options.pasteOriginal!(); this.close(); } catch (e) { this.showError(e); }
     });
     if (this.options.generate) {
-      this.generateButton = new ButtonComponent(footer).setButtonText(this.options.rules ? '使用 LLM 智能转换' : '发送并转换').onClick(() => void this.generate());
+      this.generateButton = new ButtonComponent(footer).setButtonText(this.options.rules ? '使用 LLM 智能转换' : '发送并转换').onClick(() => {
+        // Disabling a focused send button drops DOM focus. Keep the preview
+        // focused so the next Enter can apply the completed result.
+        body.focus({ preventScroll: true });
+        void this.generate();
+      });
     }
     this.applyButton = new ButtonComponent(footer).setButtonText('确认应用').setCta().setDisabled(this.result === undefined || !this.result.length).onClick(() => {
       try {
@@ -181,8 +195,6 @@ export class PreviewModal extends Modal {
     this.textarea.value = this.result ?? '';
     this.updateInputState();
     this.drawDiff();
-    if (this.sourceInput) this.sourceInput.focus();
-    else body.focus();
   }
   private input(): ConversionInput {
     return { text: this.source, images: this.images.map(image => image.data) };

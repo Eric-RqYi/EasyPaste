@@ -38,6 +38,7 @@ export function convertRules(input: string, options: RuleOptions, context?: Rule
   let text = protectedText.text;
   const reasons = new Set<string>();
   let continuationPrefix = '';
+  let firstLineSeparator = '';
   const update = (next: string, reason: string) => { if (next !== text) reasons.add(reason); text = next; };
   const pipeline = options.pipeline ?? BUILTIN_RULE_ORDER.map(id => ({ kind: 'builtin' as const, id }));
   for (const rule of pipeline) {
@@ -52,11 +53,9 @@ export function convertRules(input: string, options: RuleOptions, context?: Rule
     if (rule.id === 'pasteIntoCallout') {
       const lineBeforeCursor = context?.lineBeforeCursor ?? context?.beforeCursor.split('\n').at(-1) ?? '';
       const linePrefix = calloutPrefix(lineBeforeCursor);
-      if (linePrefix && input.includes('\n')) {
+      if (linePrefix) {
         continuationPrefix = linePrefix + (linePrefix.endsWith('>') ? ' ' : '');
-        update((lineBeforeCursor === linePrefix && linePrefix.endsWith('>') ? ' ' : '') + text.replace(/\n/g, '\n' + continuationPrefix), '粘贴到标注内容');
-        // Multiline protected code/math also need prefixes when their tokens are restored.
-        reasons.add('粘贴到标注内容');
+        firstLineSeparator = lineBeforeCursor === linePrefix && linePrefix.endsWith('>') ? ' ' : '';
       }
     }
     if (rule.id === 'words') {
@@ -96,6 +95,13 @@ export function convertRules(input: string, options: RuleOptions, context?: Rule
       }), '连接段落中的硬换行');
     }
   }
-  const result = protectedText.restore(text, continuationPrefix).replace(/\n/g, newline);
+  let result = protectedText.restore(text);
+  // Quote the final output, including new lines created by lists or custom rules.
+  // Restoring protected spans first also keeps multiline code/math inside the callout.
+  if (continuationPrefix && result.includes('\n')) {
+    result = firstLineSeparator + result.replace(/\n/g, '\n' + continuationPrefix);
+    reasons.add('粘贴到标注内容');
+  }
+  result = result.replace(/\n/g, newline);
   return { text: result, reasons: result === input ? [] : [...reasons] };
 }

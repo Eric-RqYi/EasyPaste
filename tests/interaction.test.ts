@@ -10,9 +10,18 @@ class Element {
   children: Element[] = [];
   attributes: Record<string, string> = {};
   events: Record<string, (event?: any) => void> = {};
-  text = ''; value = ''; hidden = false; disabled = false; className = '';
+  text = ''; value = ''; hidden = false; className = '';
+  private isDisabled = false;
+  get disabled() { return this.isDisabled; }
+  set disabled(value: boolean) {
+    this.isDisabled = value;
+    if (value && Element.focused === this) Element.focused = undefined;
+  }
   scrollTop = 0; scrollLeft = 0;
-  ownerDocument = { createElement: (tag: string) => new Element(tag) };
+  ownerDocument = {
+    createElement: (tag: string) => new Element(tag),
+    get activeElement() { return Element.focused ?? null; }
+  };
   get childNodes() { return this.children; }
   get firstElementChild() { return this.children[0]; }
   files: { name: string; type: string; size: number }[] = [];
@@ -99,11 +108,44 @@ class Setting {
   }
 }
 class Modal {
-  scope = { enter: (_event: any): any => {}, register: (_modifiers: string[], _key: string, callback: (event: any) => any) => { this.scope.enter = callback; } };
+  private keys: { modifiers: string[]; key: string; callback: (event: any) => any }[] = [];
+  scope = {
+    register: (modifiers: string[], key: string, callback: (event: any) => any) => {
+      const handler = { modifiers, key, callback };
+      this.keys.push(handler);
+      return handler;
+    },
+    enter: (event: any): any => {
+      const modifiers = ['shift', 'ctrl', 'meta', 'alt'].filter(key => event[`${key}Key`]);
+      const handler = this.keys.find(handler => handler.key === event.key
+        && handler.modifiers.length === modifiers.length
+        && handler.modifiers.every(key => modifiers.includes(key.toLowerCase())));
+      return handler?.callback(event);
+    }
+  };
   contentEl = new Element(); modalEl = new Element();
   constructor(readonly app: unknown) {}
   setTitle() {} onOpen() {} onClose() {}
-  open() { this.onOpen(); } close() { this.onClose(); }
+  open() {
+    this.onOpen();
+    // Obsidian focuses the first eligible control AFTER onOpen returns.
+    this.contentEl.all().find(el => !el.disabled && (['button', 'input', 'select', 'textarea'].includes(el.tag)
+      || el.attributes.tabindex !== undefined))?.focus();
+  }
+  close() { this.onClose(); }
+  keydown(extra: Record<string, unknown> = {}) {
+    let stopped = false;
+    const event = { key: 'Enter', target: Element.focused, defaultPrevented: false,
+      preventDefault() { this.defaultPrevented = true; }, stopPropagation() { stopped = true; }, ...extra };
+    // The host scope runs at window capture, ahead of listeners on the preview.
+    if (this.scope.enter(event) === false) { event.preventDefault(); event.stopPropagation(); }
+    for (let el = event.target; el && !stopped; el = el.parent) el.events.keydown?.(event);
+    if (!event.defaultPrevented && event.key === 'Enter') {
+      if (event.target?.tag === 'button') event.target.click();
+      if (event.target?.tag === 'textarea') event.target.fill(event.target.value + '\n');
+    }
+    return event;
+  }
 }
 class MenuItem {
   title = ''; disabled = false; action = () => {};
@@ -715,6 +757,63 @@ test('paste into callout opens a preview on unchanged prose, toggles live, and k
   assert.equal(h.editor.value, '> First\n> \n> Second');
 });
 
+test('offline preview keeps initial focus after the host opens it and Enter applies once', async () => {
+  const h = await host('ofthe');
+  h.plugin.commands.find((command: any) => command.id === 'clean-selection').editorCheckCallback(false, h.editor, h.view);
+  const modal = h.plugin.modal as Modal;
+  assert.ok(Element.focused === modal.contentEl.find('转换预览'), 'Expected preview focus');
+  assert.equal(modal.keydown().defaultPrevented, true);
+  assert.equal(h.editor.value, 'prefixof the');
+});
+
+test('smart selection starts in preview and scope Enter sends then applies without another click', async () => {
+  const h = await host('source');
+  const modal = h.open();
+  const preview = modal.contentEl.find('转换预览');
+  assert.ok(Element.focused === preview, 'Expected preview focus');
+  modal.keydown();
+  modal.keydown({ repeat: true });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.editor.value, 'prefixsource');
+  assert.ok(Element.focused === preview, 'Expected preview focus');
+  modal.keydown();
+  assert.equal(h.editor.value, 'prefixconverted');
+});
+
+test('clicking send moves focus to preview before the host disables the button', async () => {
+  const h = await host('source');
+  const modal = h.open();
+  const send = modal.contentEl.find('发送并转换');
+  send.focus();
+  send.click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.requests.length, 1);
+  assert.ok(Element.focused === modal.contentEl.find('转换预览'), 'Expected preview focus');
+  modal.keydown();
+  assert.equal(h.editor.value, 'prefixconverted');
+});
+
+test('host key dispatch preserves input newlines and ignores modified, composing and repeated Enter', async () => {
+  const h = await host();
+  const modal = h.open();
+  assert.ok(Element.focused === modal.contentEl.find('待转换文本'), 'Expected source input focus');
+  for (const label of ['待转换文本', '智能转换临时要求', '编辑转换结果']) {
+    const input = modal.contentEl.find(label);
+    input.focus();
+    input.fill('text');
+    assert.equal(modal.keydown().defaultPrevented, false);
+    assert.equal(input.value, 'text\n');
+  }
+  const preview = modal.contentEl.find('转换预览');
+  preview.focus();
+  for (const extra of [{ shiftKey: true }, { ctrlKey: true }, { altKey: true }, { metaKey: true },
+    { isComposing: true }, { keyCode: 229 }, { repeat: true }, { defaultPrevented: true }]) modal.keydown(extra);
+  assert.equal(h.requests.length, 0);
+  assert.equal(h.editor.value, 'prefix');
+  modal.close();
+});
+
 test('offline Enter applies edited output; Shift+Enter, IME and repeat never apply', async () => {
   const h = await host('ofthe');
   h.plugin.commands.find((command: any) => command.id === 'clean-selection').editorCheckCallback(false, h.editor, h.view);
@@ -839,7 +938,7 @@ test('clicking readonly preview focuses it and modal-scope Enter applies exactly
   const target = original.children[0] ?? original;
   modal.contentEl.find('编辑转换结果').focus();
   preview.events.click({ target });
-  assert.equal(Element.focused, preview);
+  assert.ok(Element.focused === preview, 'Expected preview focus');
   const event = { key: 'Enter', target, defaultPrevented: false,
     preventDefault() { this.defaultPrevented = true; }, stopPropagation() {} };
   assert.equal(modal.scope.enter(event), false);
@@ -853,7 +952,7 @@ test('switching preview tabs restores preview focus and rendered descendants sup
   await modal.generate();
   const preview = modal.contentEl.find('转换预览');
   modal.contentEl.find('预览').click();
-  assert.equal(Element.focused, preview);
+  assert.ok(Element.focused === preview, 'Expected preview focus');
   const rendered = modal.contentEl.querySelector('.easypaste-rendered')!;
   const text = rendered.createSpan({ text: 'rendered result' });
   modal.scope.enter({ key: 'Enter', target: text, preventDefault() {}, stopPropagation() {} });
@@ -913,4 +1012,31 @@ test('disabled callout rule and already handled paste do not intercept quote pas
     assert.equal(prevented, false);
     assert.equal(h.plugin.modal, undefined);
   }
+});
+
+test('single-line slide paste into a callout quotes the split list immediately and when rules are toggled', async () => {
+  const h = await host();
+  h.editor.value = '> ';
+  h.editor.from = h.editor.to = 2;
+  // It must also work when the saved rule order puts callout handling before lists.
+  const rules = h.plugin.settings.rules;
+  rules.pipeline = [{ kind: 'builtin', id: 'pasteIntoCallout' }, ...rules.pipeline!.filter((rule: any) => rule.id !== 'pasteIntoCallout')];
+  const source = 'One way to view the forward pass:– Input representation of each token ispropagated through the residual stream– Modules like MHA and FFN make small,additive edits.';
+  const expected = 'One way to view the forward pass:\n> - Input representation of each token is propagated through the residual stream– Modules like MHA and FFN make small,additive edits.';
+  let prevented = false;
+  h.events['editor-paste']({ defaultPrevented: false, clipboardData: {
+    files: [], items: [], getData: (type: string) => type === 'text/plain' ? source : ''
+  }, preventDefault: () => { prevented = true; } }, h.editor, h.view);
+  assert.equal(prevented, true);
+  const modal = h.plugin.modal as Modal;
+  const result = modal.contentEl.find('编辑转换结果');
+  assert.equal(result.value, expected);
+  const panel = modal.modalEl.find('快速配置规则');
+  panel.querySelectorAll('input')[0].events.change(false);
+  assert.equal(result.value, expected.replace(/\n> /g, '\n'));
+  panel.querySelectorAll('input')[0].events.change(true);
+  assert.equal(result.value, expected);
+  assert.equal(h.editor.value, '> ');
+  modal.contentEl.find('确认应用').click();
+  assert.equal(h.editor.value, '> ' + expected);
 });

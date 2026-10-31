@@ -97,11 +97,10 @@ test('restores decoder slide bullets when typographic dashes touch the preceding
   assert.equal(convertRules(input, opts).text, expected.replace('has not', 'hasnot').replace('make the', 'makethe').replace('future tokens', 'futuretokens'));
 });
 
-test('restores Transformer attention bullets glued to the preceding text while keeping Luong-style', () => {
+test('punctuation confirms the first attention bullet but cannot confirm a lone letter-boundary bullet', () => {
   const input = 'In Transformer attention:- the score function is bilinear (Luong-style) with separate linear projectionsfor the two interacting hidden states- attention scores must be scaled by √𝑑𝑘 (square root of the keydimensionality) to make their variance independent of dimensionality';
-  const expected = 'In Transformer attention:\n- the score function is bilinear (Luong-style) with separate linear projections for the two interacting hidden states\n- attention scores must be scaled by √𝑑𝑘 (square root of the keydimensionality) to make their variance independent of dimensionality';
+  const expected = 'In Transformer attention:\n- the score function is bilinear (Luong-style) with separate linear projections for the two interacting hidden states- attention scores must be scaled by √𝑑𝑘 (square root of the keydimensionality) to make their variance independent of dimensionality';
   assert.equal(clean(input), expected);
-  assert.equal(clean(expected), expected);
   const opts = options(); opts.words = false;
   assert.equal(convertRules(input, opts).text, expected.replace('projections for', 'projectionsfor'));
 });
@@ -121,8 +120,8 @@ for (const dash of ['-', '–', '—']) {
   test(`restores repeated ${dash} bullets without preceding whitespace while preserving ambiguous prose and ranges`, () => {
     assert.equal(clean(`• Parent:${dash} First item)${dash} Second item!• Next`),
       '- Parent:\n    - First item)\n    - Second item!\n- Next');
-    assert.equal(clean(`简介 • Parent:${dash} First item)${dash} Second item!• Next`),
-      '简介\n- Parent:\n    - First item)\n    - Second item!\n- Next');
+    assert.equal(clean(`简介 • Parent:${dash} First item)${dash} Second item!• Next step• Final`),
+      '简介\n- Parent:\n    - First item)\n    - Second item!\n- Next step\n- Final');
     const opts = options(); opts.words = false;
     for (const input of [
       `A thought${dash} with an aside`,
@@ -203,9 +202,9 @@ test('avoids punctuation, arithmetic, ranges, decimals, versions, escapes and no
 });
 
 test('does not scan protected syntax or structural Markdown for inline list evidence', () => {
-  const source = '简介 `• One • Two` $1. One 2. Two$ [link](https://example.com) • Real • Next';
-  assert.equal(clean(source), '简介 `• One • Two` $1. One 2. Two$ [link](https://example.com)\n- Real\n- Next');
-  assert.equal(clean('`label` • First • Second'), '`label`\n- First\n- Second');
+  const source = '简介 `• One • Two` $1. One 2. Two$ [link](https://example.com) • Real • Next • Last';
+  assert.equal(clean(source), '简介 `• One • Two` $1. One 2. Two$ [link](https://example.com)\n- Real\n- Next\n- Last');
+  assert.equal(clean('`label` • First • Second • Third'), '`label`\n- First\n- Second\n- Third');
   const structural = '# Heading • First • Second\n\n> quote • First • Second\n\n| cell • First • Second |\n\n```text\n• First • Second\n```';
   assert.equal(clean(structural), structural);
 });
@@ -287,4 +286,76 @@ test('callout paste works after existing quote body and uses the explicit insert
   assert.equal(convertRules('First\n\nSecond', options(), { beforeCursor: '> existing text ' }).text, 'First\n> \n> Second');
   assert.equal(convertRules('First\nSecond', options(), { beforeCursor: '> > existing text' }).text, 'First\n> > Second');
   assert.equal(convertRules('First\nSecond', options(), { beforeCursor: 'Earlier document text', lineBeforeCursor: '> ' }).text, 'First\n> Second');
+});
+
+test('callout paste prefixes lines produced from the reported single-line slide text', () => {
+  const source = 'One way to view the forward pass:– Input representation of each token ispropagated through the residual stream– Modules like MHA and FFN make small,additive edits.';
+  const expected = 'One way to view the forward pass:\n> - Input representation of each token is propagated through the residual stream– Modules like MHA and FFN make small,additive edits.';
+  for (const calloutFirst of [false, true]) {
+    const opts = options();
+    if (calloutFirst) {
+      opts.pipeline = [{ kind: 'builtin', id: 'pasteIntoCallout' }, ...opts.pipeline!.filter(rule => rule.id !== 'pasteIntoCallout')];
+    }
+    assert.equal(convertRules(source, opts, { beforeCursor: '> [!NOTE] #### Residual stream\n> ' }).text, expected);
+    opts.pasteIntoCallout = false;
+    assert.equal(convertRules(source, opts, { beforeCursor: '> ' }).text, expected.replace(/\n> /g, '\n'));
+  }
+});
+
+test('callout prefixes new lines introduced by later custom rules', () => {
+  const opts = options();
+  opts.pipeline = [
+    { kind: 'builtin', id: 'pasteIntoCallout' },
+    { kind: 'regex', id: 'split', name: 'Split', enabled: true, pattern: ';', replacement: String.raw`\n\n`, flags: 'g' }
+  ];
+  assert.equal(convertRules('First;Second', opts, { beforeCursor: '> > ' }).text, 'First\n> > \n> > Second');
+});
+
+test('restores contextual embedding slide sublists when dash markers share punctuation and initials', () => {
+  const source = '• Contextualized word embeddings: use them as input to train a model for aspecific task (e.g., classification, sequence labelling).– Similar to how we used pre-trained word2vec embeddings.– More on this later in the course• Multimodal LLMs: encoders are needed in order to convert speech or imagesinto tokens that can be input to the decoder.– These models often called “decoder-only”, but this is misleading: they use anencoder to create contextualized speech/image representations, which are thenfed to the decoder as a sequence of tokens.– They are not true encoder-decoder models, because there is no cross-attention.';
+  const expected = '- Contextualized word embeddings: use them as input to train a model for aspecific task (e.g., classification, sequence labelling).\n    - Similar to how we used pre-trained word2vec embeddings.\n    - More on this later in the course\n- Multimodal LLMs: encoders are needed in order to convert speech or imagesinto tokens that can be input to the decoder.\n    - These models often called “decoder-only”, but this is misleading: they use anencoder to create contextualized speech/image representations, which are thenfed to the decoder as a sequence of tokens.\n    - They are not true encoder-decoder models, because there is no cross-attention.';
+  const opts = options(); opts.words = false;
+  assert.equal(convertRules(source, opts).text, expected);
+  assert.equal(convertRules(expected, opts).text, expected);
+  assert.equal(clean(source), clean(expected));
+  opts.indentSize = 2;
+  assert.equal(convertRules(source, opts).text, expected.replace(/\n    -/g, '\n  -'));
+  opts.lists = false;
+  assert.equal(convertRules(source, opts).text, source);
+});
+
+test('a repeated marker context does not cancel other varied list evidence', () => {
+  const opts = options(); opts.words = false;
+  for (const dash of ['-', '–', '—']) {
+    assert.equal(convertRules(`• Parent:${dash} First.${dash} These words.${dash} They continue.`, opts).text,
+      '- Parent:\n    - First.\n    - These words.\n    - They continue.');
+    // Identical contexts alone and chains of single-letter operands remain ambiguous.
+    for (const source of [`same${dash} These same${dash} These same${dash} They`, `a${dash} b${dash} c${dash} d`]) {
+      assert.equal(convertRules(source, opts).text, source);
+    }
+  }
+});
+
+test('punctuation-boundary markers bypass comparison without counting as varied evidence', () => {
+  const opts = options(); opts.words = false;
+  assert.equal(convertRules('Intro:– These words.– They continue.', opts).text,
+    'Intro:\n- These words.\n- They continue.');
+  assert.equal(convertRules('Intro:– First tail– Second', opts).text,
+    'Intro:\n- First tail– Second');
+});
+
+test('duplicate alphanumeric contexts exclude only those markers, leaving unique contexts eligible', () => {
+  const opts = options(); opts.words = false;
+  for (const dash of ['-', '–', '—']) {
+    const source = `• Parent red${dash} Same red${dash} Same blue${dash} Other gold${dash} Last`;
+    assert.equal(convertRules(source, opts).text,
+      `- Parent red${dash} Same red${dash} Same blue\n    - Other gold\n    - Last`);
+    assert.equal(convertRules(`${dash} Parent red${dash} Same red${dash} Same blue${dash} Other gold${dash} Last`, opts).text,
+      `- Parent red${dash} Same red${dash} Same blue\n- Other gold\n- Last`);
+    assert.equal(convertRules(`10${dash} One 10${dash} One 21${dash} Two 32${dash} Three`, opts).text,
+      `10${dash} One 10${dash} One 21\n- Two 32\n- Three`);
+    // One remaining distinct context is insufficient without an anchored marker of this style.
+    const insufficient = `Intro red${dash} Same red${dash} Same blue${dash} Other`;
+    assert.equal(convertRules(insufficient, opts).text, insufficient);
+  }
 });

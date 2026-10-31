@@ -5,3 +5,5 @@ dist/
 *.zip
 data.json
 .DS_Store
+AGENTS.md
+DEVELOPMENT_LOG.md

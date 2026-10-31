@@ -10,6 +10,7 @@ interface Candidate extends Marker {
   end: number;
   anchored: boolean;
   context: string;
+  compareContext: boolean;
   operandPair: boolean;
   // A bare 1.2 needs an observed parent, otherwise it could be a decimal.
   barePath: boolean;
@@ -72,7 +73,7 @@ function candidatesOf(line: string): Candidate[] {
     }
     candidates.push({ start, end: start + raw.length + gap.length,
       indent: width(/^[ \t]*/.exec(line)![0]), signature, marker, path, anchored,
-      context: `${left}\u0000${right}`, barePath, body: '',
+      context: `${left}\u0000${right}`, compareContext: /[\p{L}\p{N}]/u.test(left), barePath, body: '',
       operandPair: /[–—−+\-]/.test(raw)
         && /^[A-Za-z]$/.test(before.trimEnd().split(/\s+/).at(-1) ?? '')
         && /^[A-Za-z](?=[ \t–—\-]|$)/.test(after.trimStart()) });
@@ -102,10 +103,20 @@ function confirmedCandidates(candidates: Candidate[]): Set<Candidate> {
   }
   for (const group of bulletGroups.values()) {
     const anchored = group.some(item => item.anchored);
-    // Compare the nearest non-space characters: copied list separators usually have spaces on both sides.
-    const varied = group.length >= 2 && new Set(group.map(item => item.context)).size === group.length
-      && !group.every(item => item.operandPair);
-    if (anchored || varied) for (const item of group) confirmed.add(item);
+    const counts = new Map<string, number>();
+    for (const item of group) {
+      // Punctuation boundaries and actual line starts need no context comparison,
+      // and do not contribute evidence for ambiguous letter/number boundaries.
+      if (item.anchored || !item.compareContext) {
+        confirmed.add(item);
+      } else {
+        counts.set(item.context, (counts.get(item.context) ?? 0) + 1);
+      }
+    }
+    // Discard only repeated contexts, then assess the remaining markers together.
+    const unique = group.filter(item => !item.anchored && item.compareContext && counts.get(item.context) === 1);
+    const varied = unique.length >= 2 && !unique.every(item => item.operandPair);
+    if (anchored || varied) for (const item of unique) confirmed.add(item);
   }
   for (const group of orderedGroups.values()) {
     // A pair of consecutive siblings confirms both markers, even with other list styles between them.
