@@ -1,4 +1,6 @@
+import { defaultT, normalizeLocale, type Locale, type Translator } from './i18n';
 import defaultPrompts from './default-prompts.json';
+import legacyRuleNames from './legacy-rule-names.json';
 
 export interface ApiSettings {
   baseUrl: string;
@@ -14,19 +16,31 @@ export type CleanupRule = { kind: 'builtin'; id: BuiltinRuleId } | {
 };
 export const BUILTIN_RULE_ORDER: BuiltinRuleId[] = ['words', 'spelling', 'lists', 'joinWrappedLines', 'pasteIntoCallout'];
 export const EXAMPLE_RULES: CleanupRule[] = [
-  { kind: 'regex', id: 'example-slides-wrapper', name: '示例：移除 Google 幻灯片首尾星号', enabled: true,
+  { kind: 'regex', id: 'example-slides-wrapper', name: '', enabled: true,
     pattern: String.raw`^[ \t]*(?:\\?\*){2}[ \t]*\n(?:[ \t]*\n)*([\s\S]*?)\n(?:[ \t]*\n)*[ \t]*(?:\\?\*){2}[ \t]*(?=\n|$)`, replacement: '$1', flags: 'gm' },
-  { kind: 'regex', id: 'example-list-blank-lines', name: '示例：移除无序列表项之间的空行', enabled: true,
+  { kind: 'regex', id: 'example-list-blank-lines', name: '', enabled: true,
     pattern: String.raw`(^[ \t]*[-+*][ \t]+[^\n]*)\n(?:[ \t]*\n)+(?=[ \t]*[-+*][ \t]+)`, replacement: String.raw`$1\n`, flags: 'gm' }
 ];
+const exampleNameKeys = {
+  'example-slides-wrapper': 'rule.exampleSlides',
+  'example-list-blank-lines': 'rule.exampleList'
+} as const;
+
+export function ruleName(rule: CleanupRule, t: Translator = defaultT): string {
+  if (rule.kind === 'builtin') return t(`rule.${rule.id}Name`);
+  const key = exampleNameKeys[rule.id as keyof typeof exampleNameKeys];
+  if (!rule.name && key) return t(key);
+  return rule.name || t('rule.custom');
+}
 /** Replacement strings do not interpret escapes in JavaScript's String.replace. */
 export function replacementText(value: string): string {
   return value.replace(/\\([nrt\\])/g, (_match, escape: string) => ({ n: '\n', r: '\r', t: '\t', '\\': '\\' })[escape]!);
 }
-export function regexError(pattern: string, flags: string): string | null {
-  if (!pattern) return '请输入匹配表达式';
+export function regexError(pattern: string, flags: string, t: Translator = defaultT): string | null {
+  if (!pattern) return t('rule.patternRequired');
+  if (/[^dgimsuvy]/.test(flags) || new Set(flags).size !== flags.length || (flags.includes('u') && flags.includes('v'))) return t('rule.invalidFlags');
   try { new RegExp(pattern, flags); return null; }
-  catch (error) { return error instanceof Error ? error.message : '正则表达式无效'; }
+  catch { return t('rule.invalidPattern'); }
 }
 export interface RuleOptions {
   pipeline?: CleanupRule[];
@@ -43,6 +57,7 @@ export interface RuleOptions {
   vocabulary: string;
 }
 export interface EasyPasteSettings {
+  language: Locale;
   autoPaste: boolean;
   shortcuts: boolean;
   maxAutoChars: number;
@@ -53,7 +68,7 @@ export interface EasyPasteSettings {
   temporaryInstructions: string;
 }
 export const DEFAULT_SETTINGS: EasyPasteSettings = {
-  autoPaste: true, shortcuts: true, maxAutoChars: 30000,
+  language: 'zh-CN', autoPaste: true, shortcuts: true, maxAutoChars: 30000,
   rules: {
     lists: true, words: true, spelling: false, spellingTarget: 'gb', spellingProtectedWords: '',
     joinWrappedLines: false, pasteIntoCallout: true, indentSize: 4,
@@ -100,6 +115,7 @@ export function loadSettings(value: SavedSettings | null): EasyPasteSettings {
       secretName: provider.secretName || fallback.secretName
     } : { ...fallback };
   };
+  result.language = normalizeLocale(saved.language);
   result.textApi = migrateApi(textApi, defaults.textApi, 'textModel', textProvider);
   result.imageApi = migrateApi(imageApi, defaults.imageApi, 'visionModel', visionProvider);
   result.temporaryInstructions = typeof saved.temporaryInstructions === 'string'
@@ -112,7 +128,13 @@ export function loadSettings(value: SavedSettings | null): EasyPasteSettings {
       pipeline.push({ kind: 'builtin', id: rule.id });
     } else if (rule.kind === 'regex' && !BUILTIN_RULE_ORDER.includes(rule.id as BuiltinRuleId)
       && typeof rule.pattern === 'string' && typeof rule.replacement === 'string' && typeof rule.flags === 'string') {
-      pipeline.push({ ...rule, name: typeof rule.name === 'string' ? rule.name : '自定义规则', enabled: rule.enabled === true });
+      let name = typeof rule.name === 'string' ? rule.name : '';
+      const exampleId = rule.id as keyof typeof exampleNameKeys;
+      const key = exampleNameKeys[exampleId];
+      // Store untouched defaults without language-specific copy. The frozen legacy
+      // values keep this migration working even after the Chinese review edits.
+      if (key && (name === legacyRuleNames[exampleId] || name === defaultT(key))) name = '';
+      pipeline.push({ ...rule, name, enabled: rule.enabled === true });
     } else continue;
     seen.add(rule.id);
   }

@@ -1,16 +1,14 @@
 import { Setting } from 'obsidian';
-import { regexError, type CleanupRule, type RuleOptions } from './settings';
+import { defaultT, type Translator } from './i18n';
+import { ruleName, regexError, type CleanupRule, type RuleOptions } from './settings';
 
-const labels = {
-  words: ['英文断词与粘连词', '使用内置词典修复断词与粘连词。'],
-  spelling: ['英美拼写转换', '转换常见英美拼写'],
-  lists: ['列表与缩进', '规范列表符号、层级与续行缩进。'],
-  joinWrappedLines: ['连接普通段落硬换行', '连接相邻的非空文本段落。'],
-  pasteIntoCallout: ['粘贴到标注内容', '在行首 > 后粘贴时，让后续行与空行继承引用前缀，保持在同一个标注框内。']
-};
+const descriptions = {
+  words: 'rule.wordsDesc', spelling: 'rule.spellingDesc', lists: 'rule.listsDesc',
+  joinWrappedLines: 'rule.joinWrappedLinesDesc', pasteIntoCallout: 'rule.pasteIntoCalloutDesc'
+} as const;
 
 /** The preview and settings share ordering, toggles and accessible drag handles. */
-export function renderRuleList(root: HTMLElement, options: RuleOptions, changed: () => void, editable = false): void {
+export function renderRuleList(root: HTMLElement, options: RuleOptions, changed: () => void, editable = false, t: Translator = defaultT): void {
   const pipeline = options.pipeline!;
   let dragged: string | undefined;
   const move = (id: string, target: number) => {
@@ -26,10 +24,10 @@ export function renderRuleList(root: HTMLElement, options: RuleOptions, changed:
     pipeline.forEach((rule, index) => {
       const card = root.createDiv({ cls: 'easypaste-rule easypaste-rule-edge' });
       const head = card.createDiv({ cls: 'easypaste-rule-head' });
-      const name = rule.kind === 'builtin' ? labels[rule.id][0] : rule.name || '自定义规则';
+      const name = ruleName(rule, t);
       const handle: HTMLElement = card.createEl('div', {
         cls: 'easypaste-drag-handle easypaste-drag-edge', attr: {
-        role: 'button', tabindex: '0', draggable: 'true', 'aria-label': `拖动排序：${name}；也可用上下方向键移动`
+        role: 'button', tabindex: '0', draggable: 'true', 'aria-label': t('rule.dragLabel', { name })
       } });
       handle.addEventListener('keydown', event => {
         if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
@@ -74,8 +72,8 @@ export function renderRuleList(root: HTMLElement, options: RuleOptions, changed:
         move(dragged, target);
         dragged = undefined;
       });
-      const row = new Setting(head).setName(`${index + 1}. ${name}${rule.kind === 'builtin' ? '（内置）' : ''}`)
-        .setDesc(rule.kind === 'builtin' ? labels[rule.id][1] : '自定义正则替换')
+      const row = new Setting(head).setName(t(rule.kind === 'builtin' ? 'rule.builtinRow' : 'rule.customRow', { index: index + 1, name }))
+        .setDesc(rule.kind === 'builtin' ? t(descriptions[rule.id]) : t('rule.customDesc'))
         .addToggle(t => t.setValue(rule.kind === 'builtin' ? options[rule.id] : rule.enabled).onChange(value => {
           if (rule.kind === 'builtin') options[rule.id] = value;
           else rule.enabled = value;
@@ -83,37 +81,37 @@ export function renderRuleList(root: HTMLElement, options: RuleOptions, changed:
         }));
       if (rule.kind === 'builtin' && rule.id === 'spelling') {
         row.addDropdown(d => {
-          d.selectEl.setAttribute('aria-label', '转换至：');
-          d.addOptions({ gb: '英式', us: '美式' }).setValue(options.spellingTarget).onChange(value => {
+          d.selectEl.setAttribute('aria-label', t('rule.spellingTarget'));
+          d.addOptions({ gb: t('rule.gb'), us: t('rule.us') }).setValue(options.spellingTarget).onChange(value => {
             options.spellingTarget = value === 'us' ? 'us' : 'gb';
             changed();
           });
         });
-        if (editable) new Setting(card).setName('白名单').setDesc('可选，空格或换行分隔，忽略大小写。')
-          .addTextArea(t => {
-            t.inputEl.setAttribute('aria-label', '拼写保护词');
-            t.setValue(options.spellingProtectedWords).onChange(value => { options.spellingProtectedWords = value; changed(); });
+        if (editable) new Setting(card).setName(t('rule.protectedWords')).setDesc(t('rule.protectedWordsDesc'))
+          .addTextArea(input => {
+            input.inputEl.setAttribute('aria-label', t('rule.protectedWordsLabel'));
+            input.setValue(options.spellingProtectedWords).onChange(value => { options.spellingProtectedWords = value; changed(); });
           });
       }
       if (!editable || rule.kind !== 'regex') return;
-      row.addButton(b => b.setButtonText('删除').onClick(() => { pipeline.splice(index, 1); render(); changed(); }));
-      new Setting(card).setName('规则名称').addText(t => t.setValue(rule.name).onChange(value => { rule.name = value; changed(); }));
-      new Setting(card).setName('匹配表达式').setDesc('JavaScript 正则语法，不要填写两侧的 /。')
+      row.addButton(b => b.setButtonText(t('common.delete')).onClick(() => { pipeline.splice(index, 1); render(); changed(); }));
+      new Setting(card).setName(t('rule.name')).addText(input => input.setValue(ruleName(rule, t)).onChange(value => { rule.name = value; changed(); }));
+      new Setting(card).setName(t('rule.pattern')).setDesc(t('rule.patternDesc'))
         .addTextArea(t => t.setValue(rule.pattern).onChange(value => { rule.pattern = value; validate(); changed(); }));
       const status = card.createEl('p', { cls: 'easypaste-regex-status', attr: { role: 'status', 'aria-live': 'polite' } });
       const validate = () => {
-        const error = regexError(rule.pattern, rule.flags);
-        status.setText(error ? `规则无效，执行时跳过：${error}` : '正则表达式有效');
+        const error = regexError(rule.pattern, rule.flags, t);
+        status.setText(error ? t('rule.invalid', { error }) : t('rule.valid'));
         status.toggleClass('easypaste-rule-error', !!error);
       };
-      new Setting(card).setName('替换文本').setDesc('支持 $1、$2、$<名称> 捕获组；\\n 换行、\\t 制表符、\\\\ 字面反斜杠；留空表示删除匹配内容。')
+      new Setting(card).setName(t('rule.replacement')).setDesc(t('rule.replacementDesc'))
         .addTextArea(t => t.setValue(rule.replacement).onChange(value => { rule.replacement = value; changed(); }));
-      new Setting(card).setName('匹配标志').setDesc('例如 g 全部替换、i 忽略大小写、m 多行、s 跨行。留空仅替换首处。')
+      new Setting(card).setName(t('rule.flags')).setDesc(t('rule.flagsDesc'))
         .addText(t => t.setValue(rule.flags).onChange(value => { rule.flags = value; validate(); changed(); }));
       validate();
     });
-    if (editable) new Setting(root).setName('新增正则规则').addButton(b => b.setButtonText('新增规则').onClick(() => {
-      const rule: CleanupRule = { kind: 'regex', id: crypto.randomUUID(), name: '自定义规则', enabled: false, pattern: '', replacement: '', flags: 'g' };
+    if (editable) new Setting(root).setName(t('rule.addTitle')).addButton(b => b.setButtonText(t('rule.add')).onClick(() => {
+      const rule: CleanupRule = { kind: 'regex', id: crypto.randomUUID(), name: '', enabled: false, pattern: '', replacement: '', flags: 'g' };
       pipeline.push(rule); render(); changed();
     }));
   };

@@ -1,3 +1,5 @@
+import { defaultT, UserFacingError, type Translator } from './i18n';
+
 export interface TextEditor {
   getValue(): string;
   getRange(from: {line: number; ch: number}, to: {line: number; ch: number}): string;
@@ -10,7 +12,7 @@ export class EditTarget {
   readonly from: {line: number; ch: number};
   readonly to: {line: number; ch: number};
   readonly original: string;
-  constructor(private readonly editor: TextEditor, private readonly valid: () => boolean) {
+  constructor(private readonly editor: TextEditor, private readonly valid: () => boolean, private readonly t: Translator = defaultT) {
     this.document = editor.getValue();
     this.from = { ...editor.getCursor('from') };
     this.to = { ...editor.getCursor('to') };
@@ -18,7 +20,7 @@ export class EditTarget {
   }
   apply(text: string): void {
     if (!this.valid() || this.editor.getValue() !== this.document) {
-      throw new Error('原笔记已编辑、关闭或切换，请重新选择内容后转换。转换结果仍保留在预览中。');
+      throw new UserFacingError('preview.targetChanged', {}, this.t);
     }
     this.editor.replaceRange(text, this.from, this.to);
   }

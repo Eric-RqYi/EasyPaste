@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
+import { createTranslator, type Locale } from '../src/i18n';
 import { loadSettings, type EasyPasteSettings } from '../src/settings';
 
 // A small Obsidian host double runs the actual bundled command and modal code.
@@ -25,6 +26,7 @@ class Element {
   get childNodes() { return this.children; }
   get firstElementChild() { return this.children[0]; }
   files: { name: string; type: string; size: number }[] = [];
+  get options() { return this.children.filter(child => child.tag === 'option'); }
   constructor(readonly tag = 'div') {}
   createEl(tag: string, options: any = {}): Element {
     const el = new Element(tag);
@@ -87,7 +89,7 @@ class Setting {
   settingEl: Element;
   constructor(parent: Element) { this.settingEl = parent.createDiv('setting-item'); }
   setName(text: string) { this.settingEl.createSpan({ text }); return this; }
-  setDesc() { return this; } setHeading() { return this; }
+  setDesc(text: string) { this.settingEl.setAttribute('data-description', text); return this; } setHeading() { return this; }
   addToggle(callback: (toggle: any) => void) {
     const input = this.settingEl.createEl('input');
     const toggle = { setValue(value: boolean) { input.value = String(value); return this; }, onChange(fn: (value: boolean) => void) { input.events.change = event => fn(event); return this; } };
@@ -98,7 +100,7 @@ class Setting {
   addText(callback: (text: any) => void) { return this.addTextArea(callback); }
   addDropdown(callback: (dropdown: any) => void) {
     const select = this.settingEl.createEl('select');
-    const dropdown = { selectEl: select, addOptions() { return this; }, setValue(value: string) { select.value = value; return this; }, onChange(fn: (value: string) => void) { select.events.input = () => fn(select.value); return this; } };
+    const dropdown = { selectEl: select, addOptions(options: Record<string, string>) { for (const [value, text] of Object.entries(options)) { const option = select.createEl('option', { text }); option.value = value; } return this; }, setValue(value: string) { select.value = value; return this; }, onChange(fn: (value: string) => void) { select.events.input = () => fn(select.value); return this; } };
     callback(dropdown); return this;
   }
   addTextArea(callback: (text: any) => void) {
@@ -125,7 +127,8 @@ class Modal {
   };
   contentEl = new Element(); modalEl = new Element();
   constructor(readonly app: unknown) {}
-  setTitle() {} onOpen() {} onClose() {}
+  title = '';
+  setTitle(value: string) { this.title = value; } onOpen() {} onClose() {}
   open() {
     this.onOpen();
     // Obsidian focuses the first eligible control AFTER onOpen returns.
@@ -161,8 +164,10 @@ class Menu {
 class File { extension = 'png'; stat = { size: 2 }; constructor(readonly path: string) {} }
 const bundle = build({ entryPoints: ['src/main.ts'], bundle: true, write: false, platform: 'node', format: 'cjs', external: ['obsidian'], logLevel: 'silent' });
 
-async function host(selection = '') {
+async function host(selection = '', commandPrefix = '', initialSettings: EasyPasteSettings | null = null) {
   const requests: any[] = [];
+  const notices: string[] = [];
+  const secrets = new Map<string, string>();
   let savedSettings: EasyPasteSettings | undefined;
   const rendered: { text: string; element: Element; finish: () => void }[] = [];
   let delayRenders = false;
@@ -191,18 +196,21 @@ async function host(selection = '') {
     workspace: { getActiveViewOfType: () => view, on: (name: string, callback: (...args: any[]) => void) => { events[name] = callback; } },
     metadataCache: { getFirstLinkpathDest: (path: string) => path === 'one.png' ? new File(path) : null },
     vault: { readBinary: async () => new Uint8Array([0, 0]).buffer },
-    secretStorage: { getSecret: (name: string) => name.includes('image') ? 'vision-key' : 'text-key' }
+    secretStorage: {
+      getSecret: (name: string) => secrets.get(name) ?? (name.includes('image') ? 'vision-key' : 'text-key'),
+      setSecret: (name: string, key: string) => { secrets.set(name, key); }
+    }
   };
   class Plugin {
     app = app; commands: any[] = []; settings!: EasyPasteSettings; manifest = { id: 'easy-paste' };
-    async loadData() { return null; } async saveData(value: EasyPasteSettings) { savedSettings = structuredClone(value); }
-    addCommand(command: unknown) { this.commands.push(command); }
+    async loadData() { return initialSettings; } async saveData(value: EasyPasteSettings) { savedSettings = structuredClone(value); }
+    addCommand(command: any) { command.name = commandPrefix + command.name; this.commands.push(command); return command; }
     addSettingTab() {} registerEvent() {}
   }
   const obsidian = {
     htmlToMarkdown(html: string) { htmlInputs.push(html); if (htmlFails) throw new Error('Invalid HTML'); return clipboardMarkdown; },
     Plugin, Modal, Setting, setIcon() {}, ButtonComponent: Button, TFile: File, MarkdownView: class {}, PluginSettingTab: class { containerEl = new Element(); constructor(readonly app: unknown) {} },
-    Component: class { load() {} unload() {} addChild() {} removeChild() {} }, Notice: class {},
+    Component: class { load() {} unload() {} addChild() {} removeChild() {} }, Notice: class { constructor(message: string) { notices.push(message); } },
     MarkdownRenderer: { render: (_app: unknown, text: string, element: Element) => new Promise<void>(resolve => {
       const finish = () => { element.createSpan({ text }); resolve(); };
       rendered.push({ text, element, finish });
@@ -223,7 +231,7 @@ async function host(selection = '') {
   plugin.settings.textApi = { ...plugin.settings.textApi, baseUrl: 'https://text.example/v1', model: 'text-model', secretName: 'text' };
   plugin.settings.imageApi = { ...plugin.settings.imageApi, baseUrl: 'https://vision.example/v1', model: 'vision-model', secretName: 'image' };
   const command = plugin.commands.find((c: any) => c.id === 'convert-selection');
-  return { plugin, editor, view, events, requests, command, rendered, settingNavigation, htmlInputs, getSavedSettings: () => savedSettings, setClipboardMarkdown: (text: string) => { clipboardMarkdown = text; }, failHtml: () => { htmlFails = true; }, setResponse: (text: string) => { responseContent = text; }, delayRenders: () => { delayRenders = true; }, finishImageReads: async () => {
+  return { plugin, editor, view, events, requests, notices, command, rendered, settingNavigation, htmlInputs, getSavedSettings: () => savedSettings, setClipboardMarkdown: (text: string) => { clipboardMarkdown = text; }, failHtml: () => { htmlFails = true; }, setResponse: (text: string) => { responseContent = text; }, delayRenders: () => { delayRenders = true; }, finishImageReads: async () => {
     imageReads.splice(0).forEach(read => read());
     await new Promise(resolve => setImmediate(resolve));
   }, open: () => {
@@ -376,8 +384,11 @@ test('preview rule panel only toggles/reorders rules and regenerates from the or
   panel.querySelectorAll('input')[h.plugin.settings.rules.pipeline.findIndex((rule: any) => rule.id === 'words')].events.change(false);
   assert.equal(h.plugin.settings.rules.words, false);
   assert.equal(editor.value, 'ofthe');
+  assert.equal(modal.contentEl.querySelector('.easypaste-status')!.text, '当前规则没有改变原文。');
   panel.querySelectorAll('input')[h.plugin.settings.rules.pipeline.findIndex((rule: any) => rule.id === 'words')].events.change(true);
   assert.equal(editor.value, 'of the');
+  assert.equal(modal.contentEl.querySelector('.easypaste-status')!.text, '');
+  assert.match(modal.contentEl.querySelector('.easypaste-tags')!.textContent, /拆分粘连单词/);
   assert.equal(h.requests.length, 0);
   modal.modalEl.find('打开规则设置').click();
   assert.deepEqual(h.settingNavigation, ['open', 'easy-paste']);
@@ -1039,4 +1050,94 @@ test('single-line slide paste into a callout quotes the split list immediately a
   assert.equal(h.editor.value, '> ');
   modal.contentEl.find('确认应用').click();
   assert.equal(h.editor.value, '> ' + expected);
+});
+
+async function selectLanguage(h: Awaited<ReturnType<typeof host>>, locale: Locale): Promise<void> {
+  h.plugin.settingTab.display();
+  const root = h.plugin.settingTab.containerEl as Element;
+  const row = root.find(h.plugin.t('language.name')).parent!;
+  const select = row.children.find(child => child.tag === 'select')!;
+  select.fill(locale);
+  await new Promise(resolve => setImmediate(resolve));
+}
+
+test('all three languages are selectable, persist, and load with translated commands after restart', async () => {
+  const h = await host();
+  h.plugin.settingTab.display();
+  const root = h.plugin.settingTab.containerEl as Element;
+  const row = root.find('插件语言').parent!;
+  assert.equal(row.attributes['data-description'], undefined);
+  const select = row.children.find(child => child.tag === 'select')!;
+  assert.deepEqual(select.options.map(option => [option.value, option.text, option.disabled]), [
+    ['zh-CN', '简体中文', false], ['en', '英语', false], ['ko', '韩语', false]
+  ]);
+  for (const locale of ['en', 'ko', 'zh-CN'] as const) {
+    await selectLanguage(h, locale);
+    assert.equal(h.plugin.settings.language, locale);
+    assert.equal(h.getSavedSettings()?.language, locale);
+    const restarted = await host('', '', h.getSavedSettings()!);
+    assert.equal(restarted.plugin.settings.language, locale);
+    assert.equal(restarted.plugin.commands[0].name, createTranslator(locale)('command.clean'));
+  }
+});
+
+test('real language changes translate new UI and errors while preserving open preview edits and user content', async () => {
+  const h = await host('source content');
+  const first = h.open();
+  await first.generate();
+  first.contentEl.find('编辑转换结果').fill('my manual edit');
+  h.plugin.settings.temporaryInstructions = '用户自定义要求';
+  const prompt = h.plugin.settings.textApi.prompt;
+  await selectLanguage(h, 'en');
+  assert.equal(first.contentEl.find('编辑转换结果').value, 'my manual edit');
+  assert.equal(first.title, 'EasyPaste：智能转换');
+  first.close();
+  for (const locale of ['en', 'ko', 'zh-CN'] as const) {
+    await selectLanguage(h, locale);
+    const t = createTranslator(locale);
+    assert.equal(h.plugin.commands[0].name, t('command.clean'));
+    assert.equal(h.plugin.settings.textApi.prompt, prompt);
+    assert.equal(h.plugin.settings.temporaryInstructions, '用户自定义要求');
+    const menu = new Menu();
+    h.events['editor-menu'](menu, h.editor, h.view);
+    assert.equal(menu.items[0].title, t('common.menuTitle', { name: t('command.clean') }));
+    const settingsRoot = h.plugin.settingTab.containerEl as Element;
+    settingsRoot.find(t('language.name'));
+    settingsRoot.find(t('rule.pattern'));
+    const description = settingsRoot.find(t('settings.maxChars')).parent!.attributes['data-description'];
+    assert.equal(description, t('settings.maxCharsDesc'));
+    const next = h.open();
+    assert.equal(next.title, t('preview.smartTitle'));
+    const source = next.contentEl.find(t('preview.sourceLabel'));
+    assert.equal(source.value, 'source content');
+    assert.equal(source.attributes.placeholder, t('preview.sourcePlaceholder'));
+    assert.equal(next.contentEl.find(t('preview.instructions')).value, '用户自定义要求');
+    next.contentEl.find(t('preview.editorLabel'));
+    source.fill('');
+    await next.generate();
+    assert.equal(next.contentEl.querySelector('.easypaste-status')!.text, t('input.empty'));
+    source.fill('source content');
+    await next.generate();
+    assert.equal(next.contentEl.querySelector('.easypaste-status')!.text, t('preview.converted'));
+    // The snapshot still blocks an edited note and displays the translated error.
+    h.editor.value += '!';
+    next.contentEl.find(t('preview.apply')).click();
+    assert.equal(next.contentEl.querySelector('.easypaste-status')!.text, t('preview.targetChanged'));
+    h.editor.value = 'prefixsource content';
+    next.contentEl.find(t('preview.apply')).click();
+    assert.equal(h.notices.at(-1), t('preview.applied'));
+    h.editor.value = 'prefixsource content';
+  }
+});
+
+
+test('refreshing command language preserves host prefixes and registered command ids', async () => {
+  const h = await host('', 'EasyPaste: ');
+  const originalT = h.plugin.t;
+  Object.defineProperty(h.plugin, 't', { get: () => (key: string) => `⟦${key}⟧${originalT(key)}` });
+  await h.plugin.saveSettings();
+  assert.equal(h.plugin.commands[0].name, 'EasyPaste: ⟦command.clean⟧离线清洗');
+  assert.equal(h.plugin.commands[0].id, 'clean-selection');
+  await h.plugin.saveSettings();
+  assert.equal(h.plugin.commands[0].name, 'EasyPaste: ⟦command.clean⟧离线清洗');
 });

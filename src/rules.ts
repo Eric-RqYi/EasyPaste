@@ -1,5 +1,6 @@
+import { defaultT, type Translator } from './i18n';
 import { calloutPrefix } from './context';
-import { BUILTIN_RULE_ORDER, regexError, replacementText, type RuleOptions } from './settings';
+import { BUILTIN_RULE_ORDER, ruleName, regexError, replacementText, type RuleOptions } from './settings';
 import { wordRepair } from './words';
 import { convertSpelling } from './spelling';
 import { markerOf, normalizeLists } from './lists';
@@ -32,7 +33,7 @@ export function protectMarkdown(input: string): { text: string; restore: (text: 
 
 export interface RuleContext { beforeCursor: string; lineBeforeCursor?: string }
 
-export function convertRules(input: string, options: RuleOptions, context?: RuleContext): RuleResult {
+export function convertRules(input: string, options: RuleOptions, context?: RuleContext, t: Translator = defaultT): RuleResult {
   const newline = input.includes('\r\n') && !/(?<!\r)\n/.test(input) ? '\r\n' : '\n';
   const protectedText = protectMarkdown(input.replace(/\r\n/g, '\n'));
   let text = protectedText.text;
@@ -43,10 +44,10 @@ export function convertRules(input: string, options: RuleOptions, context?: Rule
   const pipeline = options.pipeline ?? BUILTIN_RULE_ORDER.map(id => ({ kind: 'builtin' as const, id }));
   for (const rule of pipeline) {
     if (rule.kind === 'regex') {
-      if (!rule.enabled || regexError(rule.pattern, rule.flags)) continue;
+      if (!rule.enabled || regexError(rule.pattern, rule.flags, t)) continue;
       // Process only unprotected spans so broad expressions cannot destroy Markdown sentinels.
       const chunks = text.split(/(\uE000EPX*\d+\uE001)/g);
-      update(chunks.map((chunk, index) => index % 2 ? chunk : chunk.replace(new RegExp(rule.pattern, rule.flags), replacementText(rule.replacement))).join(''), `正则替换：${rule.name}`);
+      update(chunks.map((chunk, index) => index % 2 ? chunk : chunk.replace(new RegExp(rule.pattern, rule.flags), replacementText(rule.replacement))).join(''), t('reason.regex', { name: ruleName(rule, t) }));
       continue;
     }
     if (!options[rule.id]) continue;
@@ -60,11 +61,11 @@ export function convertRules(input: string, options: RuleOptions, context?: Rule
     }
     if (rule.id === 'words') {
       const repair = wordRepair(options.vocabulary);
-      update(text.replace(/([A-Za-z])\u00AD(?:[ \t]*\n[ \t]*)?(?=[A-Za-z])/g, '$1'), '还原软连字符断词');
+      update(text.replace(/([A-Za-z])\u00AD(?:[ \t]*\n[ \t]*)?(?=[A-Za-z])/g, '$1'), t('reason.softHyphen'));
       update(text.replace(/(?<![\p{L}\p{N}_\-])(?<!\p{L}['’])([A-Za-z]+(?:-[A-Za-z]+)*)-[ \t]*\n[ \t]*([a-z][A-Za-z]*(?:-[A-Za-z]+)*)(?![\p{L}\p{N}_\-]|['’]\p{L})/gu,
-        (whole, left: string, right: string) => repair.hyphen(left, right, true) ?? whole), '还原词典确认的跨行断词');
+        (whole, left: string, right: string) => repair.hyphen(left, right, true) ?? whole), t('reason.lineHyphen'));
       update(text.replace(/(?<![\p{L}\p{N}_\-])(?<!\p{L}['’])([A-Za-z]+)-([a-z][A-Za-z]*)(?![\p{L}\p{N}_\-]|['’]\p{L})/gu,
-        (whole, left: string, right: string) => repair.hyphen(left, right, false) ?? whole), '还原词典确认的连字符断词');
+        (whole, left: string, right: string) => repair.hyphen(left, right, false) ?? whole), t('reason.hyphen'));
       const replacements = new Map<string, string>();
       for (const line of options.replacements.split('\n')) {
         const parts = line.split('=>').map(s => s.trim());
@@ -78,21 +79,21 @@ export function convertRules(input: string, options: RuleOptions, context?: Rule
         if (word === word.toUpperCase()) return replacement.toUpperCase();
         if (/^[A-Z]/.test(word)) return replacement[0].toUpperCase() + replacement.slice(1);
         return replacement;
-      }), '拆分粘连单词');
+      }), t('reason.splitWords'));
     }
     if (rule.id === 'spelling') {
       update(convertSpelling(text, options.spellingTarget, options.spellingProtectedWords),
-        options.spellingTarget === 'us' ? '统一明确的美式拼写' : '统一明确的英式拼写（-ise）');
+        options.spellingTarget === 'us' ? t('reason.spellingUS') : t('reason.spellingGB'));
     }
     if (rule.id === 'lists') {
-      update(normalizeLists(text, options.indentSize), '规范列表符号、层级与续行缩进');
+      update(normalizeLists(text, options.indentSize), t('reason.lists'));
     }
     if (rule.id === 'joinWrappedLines') {
       update(text.replace(/([^\n]+)\n(?=\S)/g, (whole, previous: string, offset: number, source: string) => {
         const next = source.slice(offset + whole.length).split('\n')[0];
         if (/^\s|^\uE000|^[#>|]|^[-*+] |^\d+[.)] /.test(previous) || markerOf(previous) || markerOf(next) || /^[#>|\uE000]/.test(next)) return whole;
         return previous.trimEnd() + ' ';
-      }), '连接段落中的硬换行');
+      }), t('reason.joinLines'));
     }
   }
   let result = protectedText.restore(text);
@@ -100,7 +101,7 @@ export function convertRules(input: string, options: RuleOptions, context?: Rule
   // Restoring protected spans first also keeps multiline code/math inside the callout.
   if (continuationPrefix && result.includes('\n')) {
     result = firstLineSeparator + result.replace(/\n/g, '\n' + continuationPrefix);
-    reasons.add('粘贴到标注内容');
+    reasons.add(t('reason.callout'));
   }
   result = result.replace(/\n/g, newline);
   return { text: result, reasons: result === input ? [] : [...reasons] };

@@ -1,3 +1,4 @@
+import { createTranslator, UserFacingError, type MessageKey, type Translator } from './i18n';
 import { Editor, MarkdownView, Notice, Plugin, TFile, arrayBufferToBase64, htmlToMarkdown, requestUrl } from 'obsidian';
 import { convertRules } from './rules';
 import { EditTarget } from './target';
@@ -10,6 +11,8 @@ import { loadSettings, migrateApiSecrets, type EasyPasteSettings } from './setti
 
 export default class EasyPaste extends Plugin {
   declare settings: EasyPasteSettings;
+  get t(): Translator { return createTranslator(this.settings.language); }
+  private localizedCommands: { command: { name: string }; key: MessageKey; prefix: string }[] = [];
   private modal?: PreviewModal;
   private saveQueue: Promise<void> = Promise.resolve();
   private settingsListeners = new Set<() => void>();
@@ -21,25 +24,31 @@ export default class EasyPaste extends Plugin {
     await this.saveSettings();
     this.settingTab = new EasyPasteSettingTab(this.app, this);
     this.addSettingTab(this.settingTab);
-    const commands: { id: string; name: string; mode: 'rules' | 'smart' }[] = [
-      { id: 'clean-selection', name: '离线清洗', mode: 'rules' },
-      { id: 'convert-selection', name: '智能转换', mode: 'smart' }
+    const commands: { id: string; key: MessageKey; mode: 'rules' | 'smart' }[] = [
+      { id: 'clean-selection', key: 'command.clean', mode: 'rules' },
+      { id: 'convert-selection', key: 'command.smart', mode: 'smart' }
     ];
-    commands.forEach(command => this.addCommand({
-      id: command.id, name: command.name,
-      editorCheckCallback: (checking, editor, view) => {
-        const available = this.settings.shortcuts && !this.modal && Boolean(view.file) && (command.mode === 'smart' || Boolean(editor.getSelection()));
-        if (available && !checking) {
-          const active = this.app.workspace.getActiveViewOfType(MarkdownView);
-          if (active) void this.manual(command.mode, editor, active);
+    commands.forEach(command => {
+      const name = this.t(command.key);
+      const registered = this.addCommand({
+        id: command.id, name,
+        editorCheckCallback: (checking, editor, view) => {
+          const available = this.settings.shortcuts && !this.modal && Boolean(view.file) && (command.mode === 'smart' || Boolean(editor.getSelection()));
+          if (available && !checking) {
+            const active = this.app.workspace.getActiveViewOfType(MarkdownView);
+            if (active) void this.manual(command.mode, editor, active);
+          }
+          return available;
         }
-        return available;
-      }
-    }));
+      });
+      // Preserve any plugin-name prefix supplied by the host.
+      const prefix = registered.name.endsWith(name) ? registered.name.slice(0, -name.length) : '';
+      this.localizedCommands.push({ command: registered, key: command.key, prefix });
+    });
     this.registerEvent(this.app.workspace.on('editor-menu', (menu, editor, info) => {
       const view = this.app.workspace.getActiveViewOfType(MarkdownView);
       if (!view || view.editor !== editor || !info.file) return;
-      for (const command of commands) menu.addItem(item => item.setTitle(`EasyPaste：${command.name}`).setIcon('wand-sparkles')
+      for (const command of commands) menu.addItem(item => item.setTitle(this.t('common.menuTitle', { name: this.t(command.key) })).setIcon('wand-sparkles')
         .setDisabled(Boolean(this.modal) || (command.mode === 'rules' && !editor.getSelection()))
         .onClick(() => void this.manual(command.mode, editor, view)));
     }));
@@ -67,7 +76,7 @@ export default class EasyPaste extends Plugin {
       const lineBeforeCursor = editor.getLine(position.line).slice(0, position.ch);
       const before = editor.getRange({ line: 0, ch: 0 }, position);
       if (isProtectedContext(before)) return;
-      const result = convertRules(text, this.settings.rules, { beforeCursor: before, lineBeforeCursor });
+      const result = convertRules(text, this.settings.rules, { beforeCursor: before, lineBeforeCursor }, this.t);
       // Compare the complete pipeline output, including enabled custom regex rules.
       if (result.text === text) return;
       event.preventDefault();
@@ -81,13 +90,14 @@ export default class EasyPaste extends Plugin {
       if (!(file instanceof TFile) || !this.mime(file.extension)) return;
       const view = this.app.workspace.getActiveViewOfType(MarkdownView);
       if (!view?.file) return;
-      menu.addItem(item => item.setTitle('EasyPaste：智能转换').setIcon('wand-sparkles').setDisabled(Boolean(this.modal))
+      menu.addItem(item => item.setTitle(this.t('common.menuTitle', { name: this.t('command.smart') })).setIcon('wand-sparkles').setDisabled(Boolean(this.modal))
         .onClick(() => void this.manual('smart', view.editor, view, file)));
     }));
   }
   onunload(): void { this.modal?.close(); }
   saveSettings(): Promise<void> {
     // Serialize writes so rapid setting edits cannot persist out of order.
+    for (const { command, key, prefix } of this.localizedCommands) command.name = prefix + this.t(key);
     const snapshot = structuredClone(this.settings);
     this.settingsListeners.forEach(listener => listener());
     this.saveQueue = this.saveQueue.catch(() => {}).then(() => this.saveData(snapshot));
@@ -97,11 +107,11 @@ export default class EasyPaste extends Plugin {
     const file = owner.file;
     const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
     const activeFile = activeView?.file;
-    return new EditTarget(editor, () => this.app.workspace.getActiveViewOfType(MarkdownView) === activeView && activeView?.file === activeFile && owner.file === file);
+    return new EditTarget(editor, () => this.app.workspace.getActiveViewOfType(MarkdownView) === activeView && activeView?.file === activeFile && owner.file === file, this.t);
   }
   private openPreview(options: Omit<ConstructorParameters<typeof PreviewModal>[1], 'closed'>): void {
-    if (this.modal) { new Notice('请先完成或关闭当前 EasyPaste 预览。'); return; }
-    this.modal = new PreviewModal(this.app, { ...options, closed: () => { this.modal = undefined; } });
+    if (this.modal) { new Notice(this.t('preview.alreadyOpen')); return; }
+    this.modal = new PreviewModal(this.app, { t: this.t, ...options, closed: () => { this.modal = undefined; } });
     this.modal.open();
   }
   /** The first line already has the editor's prefix; indent subsequent lines accordingly. */
@@ -115,11 +125,11 @@ export default class EasyPaste extends Plugin {
     if (this.modal) return;
     const target = this.target(editor, view);
     const selection = target.original;
-    if (mode === 'rules' && !selection) { new Notice('请先选中需要转换的文本。'); return; }
-    if (selection.length > 200000) { new Notice('请分段转换：单次最多 200,000 个字符。'); return; }
+    if (mode === 'rules' && !selection) { new Notice(this.t('input.selectText')); return; }
+    if (selection.length > 200000) { new Notice(this.t('input.tooLong')); return; }
     if (mode === 'rules') {
       const before = editor.getRange({ line: 0, ch: 0 }, target.from);
-      const result = convertRules(selection, this.settings.rules, { beforeCursor: before });
+      const result = convertRules(selection, this.settings.rules, { beforeCursor: before }, this.t);
       this.openPreview({ ...this.rulePreviewOptions(view.file?.path ?? '', text => text, before), source: selection, result: result.text, reasons: result.reasons, apply: text => target.apply(text) });
       return;
     }
@@ -130,6 +140,7 @@ export default class EasyPaste extends Plugin {
     });
   }
   private rulePreviewOptions(sourcePath: string, format: (text: string) => string = text => text, beforeCursor = '', lineBeforeCursor?: string): Pick<PreviewOptions, 'rules' | 'generate' | 'temporaryInstructions'> {
+    const t = this.t;
     const smart = this.smartPreviewOptions(sourcePath);
     return {
       ...smart,
@@ -137,7 +148,7 @@ export default class EasyPaste extends Plugin {
       rules: {
         get: () => this.settings.rules,
         convert: source => {
-          const result = convertRules(source, this.settings.rules, { beforeCursor, lineBeforeCursor });
+          const result = convertRules(source, this.settings.rules, { beforeCursor, lineBeforeCursor }, t);
           return { ...result, text: format(result.text) };
         },
         save: () => this.saveSettings(),
@@ -148,7 +159,7 @@ export default class EasyPaste extends Plugin {
         openSettings: () => {
           // Obsidian's settings navigator is exposed by the host, outside App's public type.
           const settings = (this.app as typeof this.app & { setting?: { open(): void; openTabById(id: string): void } }).setting;
-          if (!settings) { new Notice('请在 Obsidian 设置中打开 EasyPaste 的「离线规则」。'); return; }
+          if (!settings) { new Notice(t('preview.openSettingsHint')); return; }
           settings.open();
           settings.openTabById(this.manifest.id);
           this.settingTab.focusRules();
@@ -157,6 +168,7 @@ export default class EasyPaste extends Plugin {
     };
   }
   private smartPreviewOptions(sourcePath: string): Required<Pick<PreviewOptions, 'generate' | 'temporaryInstructions'>> {
+    const t = this.t;
     const currentApi = (mode: 'text' | 'image') => mode === 'image' ? this.settings.imageApi : this.settings.textApi;
     return {
       temporaryInstructions: {
@@ -164,13 +176,13 @@ export default class EasyPaste extends Plugin {
         save: async value => { this.settings.temporaryInstructions = value; await this.saveSettings(); }
       },
       generate: async (signal, input, instructions) => {
-        const resolved = await resolveConversionInput(input, path => this.readImage(path, sourcePath));
+        const resolved = await resolveConversionInput(input, path => this.readImage(path, sourcePath, t), t);
         const mode = conversionMode(resolved);
         // Read the latest configuration at send time, including the editable base prompt.
         const api = { ...currentApi(mode) };
         const timeoutSeconds = this.settings.timeoutSeconds;
         return convertWithApi({
-          api, key: this.app.secretStorage.getSecret(api.secretName) ?? '', mode,
+          t, api, key: this.app.secretStorage.getSecret(api.secretName) ?? '', mode,
           input: resolved.text, images: resolved.images, instructions, timeoutSeconds, signal,
           request: async request => {
             const response = await requestUrl(request);
@@ -180,26 +192,28 @@ export default class EasyPaste extends Plugin {
       }
     };
   }
-  private async readImage(path: string, sourcePath: string): Promise<string> {
+  private async readImage(path: string, sourcePath: string, t: Translator = this.t): Promise<string> {
     if (/^https:\/\//i.test(path)) {
-      const url = new URL(path);
-      if (url.username || url.password) throw new Error('图片 URL 不能包含凭据。');
+      let url: URL;
+      try { url = new URL(path); }
+      catch { throw new UserFacingError('image.invalidUrl', {}, t); }
+      if (url.username || url.password) throw new UserFacingError('image.urlCredentials', {}, t);
       return url.toString();
     }
     const dataImage = /^data:image\/(?:png|jpeg|webp|gif);base64,([a-z\d+/]+=*)$/i.exec(path);
     if (dataImage) {
       const bytes = dataImage[1].length * 3 / 4 - (dataImage[1].match(/=+$/)?.[0].length ?? 0);
-      if (bytes > 10 * 1024 * 1024) throw new Error('图片不能超过 10 MB。');
+      if (bytes > 10 * 1024 * 1024) throw new UserFacingError('image.tooLarge', {}, t);
       return path;
     }
-    if (/^[a-z][a-z\d+.-]*:/i.test(path)) throw new Error('请选择笔记库内图片或 HTTPS 图片链接。');
+    if (/^[a-z][a-z\d+.-]*:/i.test(path)) throw new UserFacingError('image.sourceRequired', {}, t);
     try { path = decodeURIComponent(path); } catch { /* use literal path */ }
     const file = this.app.metadataCache.getFirstLinkpathDest(path, sourcePath);
-    if (!file) throw new Error('无法找到选中内容中的图片，请检查嵌入路径，或移除引用后添加图片文件。');
+    if (!file) throw new UserFacingError('image.notFound', {}, t);
     const mime = this.mime(file.extension);
-    if (!mime || !file.stat.size || file.stat.size > 10 * 1024 * 1024) throw new Error('请选择不超过 10 MB 的 PNG、JPEG、WebP 或 GIF 图片。');
+    if (!mime || !file.stat.size || file.stat.size > 10 * 1024 * 1024) throw new UserFacingError('image.invalidFile', {}, t);
     try { return `data:${mime};base64,${arrayBufferToBase64(await this.app.vault.readBinary(file))}`; }
-    catch { throw new Error('无法读取图片文件。'); }
+    catch { throw new UserFacingError('image.readFileFailed', {}, t); }
   }
   private mime(extension: string): string | undefined {
     return ({ png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif' } as Record<string, string>)[extension.toLowerCase()];

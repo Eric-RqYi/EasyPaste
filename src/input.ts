@@ -1,3 +1,4 @@
+import { defaultT, UserFacingError, type Translator } from './i18n';
 import type { ConversionMode } from './api';
 
 export interface ConversionInput {
@@ -28,9 +29,9 @@ export function conversionMode(input: ConversionInput): ConversionMode {
 }
 
 /** Resolve every selected embed before sending; a missing image must never silently use the text API. */
-export async function resolveConversionInput(input: ConversionInput, readImage: (path: string) => Promise<string>): Promise<ConversionInput> {
-  if (input.text.length > 200000) throw new Error('请分段转换：单次最多 200,000 个字符。');
-  if (!input.text.trim() && !input.images.length) throw new Error('请先粘贴文本或添加图片。');
+export async function resolveConversionInput(input: ConversionInput, readImage: (path: string) => Promise<string>, t: Translator = defaultT): Promise<ConversionInput> {
+  if (input.text.length > 200000) throw new UserFacingError('input.tooLong', {}, t);
+  if (!input.text.trim() && !input.images.length) throw new UserFacingError('input.empty', {}, t);
   const images: string[] = [];
   for (const path of imageReferences(input.text)) images.push(await readImage(path));
   images.push(...input.images);
