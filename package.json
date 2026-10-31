@@ -1,6 +1,6 @@
 {
   "name": "obsidian-easypaste",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "private": true,
   "description": "Preview-first clipboard cleanup and AI OCR for Obsidian",
   "scripts": {
