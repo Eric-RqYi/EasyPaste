@@ -1,9 +1,9 @@
 {
   "id": "easy-paste",
   "name": "EasyPaste",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "minAppVersion": "1.11.4",
-  "description": "Clean pasted text, repair lists and words, and convert images to Markdown or LaTeX with a highlighted preview.",
+  "description": "Clean pasted text, repair lists and words, and convert images to Markdown or LaTeX with offline rules or LLM api.",
   "author": "Eric Yi",
   "isDesktopOnly": false
 }
