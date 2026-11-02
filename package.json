@@ -11,7 +11,10 @@
     "version": "node version-bump.mjs",
     "test": "npm run prepare:lexicon && node --import tsx --test tests/*.test.ts",
     "check": "npm test && npm run build",
-    "release": "npm run check && node scripts/release.mjs"
+    "release": "npm run check && node scripts/release.mjs",
+    "release:patch": "npm version patch && git push && git push --tags",
+    "release:minor": "npm version minor && git push && git push --tags",
+    "release:major": "npm version major && git push && git push --tags"
   },
   "dependencies": {
     "diff": "^8.0.2",
