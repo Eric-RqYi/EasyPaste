@@ -19,11 +19,17 @@ export const EXAMPLE_RULES: CleanupRule[] = [
   { kind: 'regex', id: 'example-slides-wrapper', name: '', enabled: true,
     pattern: String.raw`^[ \t]*(?:\\?\*){2}[ \t]*\n(?:[ \t]*\n)*([\s\S]*?)\n(?:[ \t]*\n)*[ \t]*(?:\\?\*){2}[ \t]*(?=\n|$)`, replacement: '$1', flags: 'gm' },
   { kind: 'regex', id: 'example-list-blank-lines', name: '', enabled: true,
-    pattern: String.raw`(^[ \t]*[-+*][ \t]+[^\n]*)\n(?:[ \t]*\n)+(?=[ \t]*[-+*][ \t]+)`, replacement: String.raw`$1\n`, flags: 'gm' }
+    pattern: String.raw`(^[ \t]*[-+*][ \t]+[^\n]*)\n(?:[ \t]*\n)+(?=[ \t]*[-+*][ \t]+)`, replacement: String.raw`$1\n`, flags: 'gm' },
+  { kind: 'regex', id: 'example-display-math', name: '', enabled: true,
+    pattern: String.raw`\\\[([\s\S]*?)\\\]`, replacement: '$$$$$1$$$$', flags: 'g' },
+  { kind: 'regex', id: 'example-inline-math', name: '', enabled: true,
+    pattern: String.raw`\\\(([^\n]*?)\\\)`, replacement: '$$$1$$', flags: 'g' }
 ];
 const exampleNameKeys = {
   'example-slides-wrapper': 'rule.exampleSlides',
-  'example-list-blank-lines': 'rule.exampleList'
+  'example-list-blank-lines': 'rule.exampleList',
+  'example-display-math': 'rule.exampleDisplayMath',
+  'example-inline-math': 'rule.exampleInlineMath'
 } as const;
 
 export function ruleName(rule: CleanupRule, t: Translator = defaultT): string {
@@ -72,8 +78,8 @@ export const DEFAULT_SETTINGS: EasyPasteSettings = {
   rules: {
     lists: true, words: true, spelling: false, spellingTarget: 'gb', spellingProtectedWords: '',
     joinWrappedLines: false, pasteIntoCallout: true, indentSize: 4,
-    pipeline: [EXAMPLE_RULES[0], ...BUILTIN_RULE_ORDER.filter(id => id !== 'pasteIntoCallout').map(id => ({ kind: 'builtin' as const, id })), EXAMPLE_RULES[1], { kind: 'builtin', id: 'pasteIntoCallout' }],
-    examplesVersion: 1,
+    pipeline: [EXAMPLE_RULES[0], EXAMPLE_RULES[2], EXAMPLE_RULES[3], ...BUILTIN_RULE_ORDER.filter(id => id !== 'pasteIntoCallout').map(id => ({ kind: 'builtin' as const, id })), EXAMPLE_RULES[1], { kind: 'builtin', id: 'pasteIntoCallout' }],
+    examplesVersion: 2,
     replacements: 'ofthe => of the\ninthe => in the\ntothe => to the\nforthe => for the\nandthe => and the\nfromthe => from the',
     vocabulary: 'information\nprocessing\nlanguage\nlearning\nrepresentation\nunderstanding\ntransformation\nclassification\nrecognition\ncommunication\nimplementation\nconfiguration\nexperimental\nexperiment\nanalysis\nattention\nmechanism\nmodel\nmodels\nneural\nnetwork\nnetworks\nnatural\nspeech\ntext\nword\nwords\nembedding\nembeddings\nsemantic\nsyntax\nsyntactic\nphonological\nmorphological\ntokenization\nperformance\nevaluation\nprobability\ndistribution\ngeneralization\nregularization\noptimization'
   },
@@ -133,7 +139,7 @@ export function loadSettings(value: SavedSettings | null): EasyPasteSettings {
       const key = exampleNameKeys[exampleId];
       // Store untouched defaults without language-specific copy. The frozen legacy
       // values keep this migration working even after the Chinese review edits.
-      if (key && (name === legacyRuleNames[exampleId] || name === defaultT(key))) name = '';
+      if (key && (name === legacyRuleNames[rule.id as keyof typeof legacyRuleNames] || name === defaultT(key))) name = '';
       pipeline.push({ ...rule, name, enabled: rule.enabled === true });
     } else continue;
     seen.add(rule.id);
@@ -146,7 +152,14 @@ export function loadSettings(value: SavedSettings | null): EasyPasteSettings {
     if (!seen.has(EXAMPLE_RULES[0].id)) pipeline.unshift(structuredClone(EXAMPLE_RULES[0]));
     if (!seen.has(EXAMPLE_RULES[1].id)) pipeline.push(structuredClone(EXAMPLE_RULES[1]));
   }
-  result.rules.examplesVersion = 1;
+  if ((value?.rules?.examplesVersion ?? 0) < 2) {
+    // Convert LaTeX delimiters before builtins can alter the unprotected content.
+    // Existing example edits, deletions and relative pipeline order are retained.
+    const mathExamples = EXAMPLE_RULES.slice(2).filter(rule => !seen.has(rule.id)).map(rule => structuredClone(rule));
+    const firstBuiltin = pipeline.findIndex(rule => rule.kind === 'builtin');
+    pipeline.splice(firstBuiltin < 0 ? pipeline.length : firstBuiltin, 0, ...mathExamples);
+  }
+  result.rules.examplesVersion = 2;
   result.rules.pipeline = pipeline;
   result.rules.spelling = result.rules.spelling === true;
   result.rules.spellingTarget = result.rules.spellingTarget === 'us' ? 'us' : 'gb';

@@ -2,7 +2,7 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-Turn content from PDFs, web pages or images into Obsidian Markdown / LaTeX with offline rules or LLM-powered smart conversion.
+An Obsidian plugin that turn content from PDFs, web pages or images into Obsidian Markdown / LaTeX with offline rules or LLM-powered smart conversion.
 
 ## Installation
 
@@ -31,8 +31,9 @@ Choose Simplified Chinese, English or Korean under **Plugin language** in EasyPa
 ### Custom rules
 
 - Click **Add rule**, enter a name, match pattern, replacement text and match flags, then enable the rule.
-- Patterns use JavaScript regular expression syntax without the surrounding `/` characters. The default `g` flag replaces all matches; combine it with `i` to ignore case, `m` for multiline matching or `s` to match across line breaks. Replacement text supports capture groups such as `$1`, as well as `\n` for a line break, `\r` for a carriage return and `\t` for a tab. `\\` represents a literal backslash. Leave the replacement blank to delete matches.
-- Two example rules for content copied from Google Slides are included and can be toggled individually.
+- Patterns use JavaScript regular expression syntax without the surrounding `/` characters. The default `g` flag replaces all matches; combine it with `i` to ignore case, `m` for multiline matching or `s` to match across line breaks. Replacement text supports capture groups such as `$1`, as well as `\n` for a line break, `\r` for a carriage return and `\t` for a tab. `\\` represents a literal backslash; `$$` inserts a literal `$`. Leave the replacement blank to delete matches.
+- Four editable, removable examples are enabled by default: two for Google Slides cleanup, plus `\[...\]` → `$$...$$` and single-line `\(...\)` → `$...$`. Formula examples run before built-in cleanup rules; upgrades add them once and retain later edits or deletions.
+- Only Obsidian `$...$` / `$$...$$` formulas are protected from cleanup, including formulas produced by earlier rules. Code, YAML and links remain protected. If you disable or move formula conversion below other rules, those earlier rules can modify text inside `\[...\]` / `\(...\)`.
 
 ### Splitting joined words and repairing hyphenation
 

@@ -558,9 +558,9 @@ test('full settings retain regex editing and only expose the spelling builtin pa
   const tab = h.plugin.settingTab;
   tab.display();
   const initialCards = tab.containerEl.querySelectorAll('.easypaste-rule');
-  assert.equal(initialCards.length, 7);
+  assert.equal(initialCards.length, 9);
   assert.ok(initialCards.filter((_card: Element, index: number) => h.plugin.settings.rules.pipeline[index].kind === 'builtin' && h.plugin.settings.rules.pipeline[index].id !== 'spelling').every((card: Element) => card.querySelectorAll('textarea').length === 0));
-  assert.equal(initialCards.filter((card: Element) => card.querySelectorAll('textarea').length > 0).length, 3);
+  assert.equal(initialCards.filter((card: Element) => card.querySelectorAll('textarea').length > 0).length, 5);
   tab.containerEl.find('新增规则').click();
   const rule = h.plugin.settings.rules.pipeline!.at(-1);
   assert.equal(rule.kind, 'regex');
@@ -581,7 +581,7 @@ test('full settings retain regex editing and only expose the spelling builtin pa
   assert.equal(modal.contentEl.find('编辑转换结果').value, 'CCC');
   card.find('删除').click();
   cards = tab.containerEl.querySelectorAll('.easypaste-rule');
-  assert.equal(cards.length, 7);
+  assert.equal(cards.length, 9);
   assert.equal(modal.contentEl.find('编辑转换结果').value, 'AAA');
   modal.close();
 });
@@ -1140,4 +1140,31 @@ test('refreshing command language preserves host prefixes and registered command
   assert.equal(h.plugin.commands[0].id, 'clean-selection');
   await h.plugin.saveSettings();
   assert.equal(h.plugin.commands[0].name, 'EasyPaste: ⟦command.clean⟧离线清洗');
+});
+
+test('formula examples and custom dollar replacements survive settings edits, save and reload, then preview on paste', async () => {
+  const h = await host();
+  h.plugin.settingTab.display();
+  const pipeline = h.plugin.settings.rules.pipeline;
+  const index = pipeline.findIndex((rule: any) => rule.id === 'example-display-math');
+  const card = h.plugin.settingTab.containerEl.querySelectorAll('.easypaste-rule')[index];
+  const fields = card.querySelectorAll('textarea');
+  assert.equal(fields[1].value, String.raw`\\\[([\s\S]*?)\\\]`);
+  assert.equal(fields[2].value, '$$$$$1$$$$');
+  fields[2].fill(String.raw`$$$$\n$1\n$$$$`);
+  await h.plugin.saveSettings();
+  const saved = JSON.parse(JSON.stringify(h.getSavedSettings()));
+  assert.equal(saved.rules.pipeline[index].replacement, String.raw`$$$$\n$1\n$$$$`);
+  const reloaded = await host('', '', saved);
+  let prevented = false;
+  reloaded.events['editor-paste']({ defaultPrevented: false, clipboardData: {
+    files: [], items: [], getData: () => String.raw`\[ofthe\] and \(colour\)`
+  }, preventDefault: () => { prevented = true; } }, reloaded.editor, reloaded.view);
+  assert.equal(prevented, true);
+  const modal = reloaded.plugin.modal;
+  assert.equal(modal.contentEl.find('编辑转换结果').value, '$$\nofthe\n$$ and $colour$');
+  assert.equal(reloaded.editor.value, 'prefix');
+  assert.equal(reloaded.requests.length, 0);
+  modal.contentEl.find('确认应用').click();
+  assert.equal(reloaded.editor.value, 'prefix$$\nofthe\n$$ and $colour$');
 });

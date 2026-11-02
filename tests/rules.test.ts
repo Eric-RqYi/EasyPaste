@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { convertRules } from '../src/rules';
+import { convertRules, protectMarkdown } from '../src/rules';
 import { DEFAULT_SETTINGS } from '../src/settings';
 
 const options = () => structuredClone(DEFAULT_SETTINGS.rules);
@@ -42,9 +42,9 @@ test('already valid Markdown is idempotent', () => {
   assert.equal(clean(clean(dirty)), clean(dirty));
   assert.equal(clean('- First  \n  continued\n- Second'), '- First  \n  continued\n- Second');
 });
-test('protects fenced code, inline code, LaTeX, links, YAML, and HTML', () => {
+test('protects fenced code, inline code, Obsidian math, links, YAML, and HTML', () => {
   const input = '---\nname: ofthe\n---\n\n```text\n· code ofthe\n```\n\n`ofthe` $ofthe$ $$\n· ofthe\n$$\n\\[ofthe\\] \\(ofthe\\)\n[ofthe](https://example.com/ofthe) ![[ofthe]]\n<a title="ofthe">\n\n· text ofthe';
-  assert.equal(clean(input), input.slice(0, input.lastIndexOf('· text ofthe')) + '- text of the');
+  assert.equal(clean(input), input.slice(0, input.lastIndexOf('· text ofthe')).replace('\\[ofthe\\] \\(ofthe\\)', () => '$$ofthe$$ $ofthe$') + '- text of the');
 });
 test('blank lines stop accidental continuation; horizontal rules remain', () => {
   assert.equal(clean('· item\n\nA new paragraph\n---'), '- item\n\nA new paragraph\n---');
@@ -358,4 +358,77 @@ test('duplicate alphanumeric contexts exclude only those markers, leaving unique
     const insufficient = `Intro red${dash} Same red${dash} Same blue${dash} Other`;
     assert.equal(convertRules(insufficient, opts).text, insufficient);
   }
+});
+
+test('only dollar math is protected; LaTeX brackets and parentheses remain available to rules', () => {
+  const latex = String.raw`\[ofthe\] \(ofthe\)`;
+  const dollars = '$$\nofthe\n$$ $ofthe$';
+  const protectedText = protectMarkdown(latex + '\n' + dollars);
+  assert.ok(protectedText.text.includes(latex));
+  assert.ok(!protectedText.text.includes('$'));
+  assert.equal(protectedText.restore(protectedText.text), latex + '\n' + dollars);
+  const opts = options();
+  opts.pipeline = [{ kind: 'builtin', id: 'words' }];
+  assert.equal(convertRules(latex + '\n' + dollars, opts).text, String.raw`\[of the\] \(of the\)` + '\n' + dollars);
+});
+
+test('custom display math rule preserves JavaScript dollar substitution semantics', () => {
+  const opts = options();
+  const rule = { kind: 'regex' as const, id: 'math', name: 'Math', enabled: true,
+    pattern: String.raw`\\\[([\s\S]*?)\\\]`, replacement: '$$$$$1$$$$', flags: 'g' };
+  opts.pipeline = [rule];
+  const input = String.raw`\[
+X=
+\begin{bmatrix}
+1&2
+\end{bmatrix}
+\]`;
+  const expected = '$$\nX=\n\\begin{bmatrix}\n1&2\n\\end{bmatrix}\n$$';
+  assert.equal(input.replace(new RegExp(rule.pattern, rule.flags), rule.replacement), expected);
+  assert.equal(convertRules(input, opts).text, expected);
+  for (const replacement of ['$$', '$$$$', '$$$$$1$$$$', '$$1', '$&', '$<body>', String.raw`$$$$\n$1\n$$$$`]) {
+    rule.pattern = String.raw`\\\[(?<body>[\s\S]*?)\\\]`;
+    rule.replacement = replacement;
+    const decoded = replacement.replace(/\\n/g, '\n');
+    assert.equal(convertRules(input, opts).text, input.replace(new RegExp(rule.pattern, 'g'), decoded), replacement);
+  }
+});
+
+test('formula examples convert multiple blocks and inline math, preserve CRLF and are idempotent', () => {
+  for (const newline of ['\n', '\r\n']) {
+    const input = ['\\[', 'X=\\begin{bmatrix}', '1&2', '\\end{bmatrix}', '\\]', String.raw`\(x+1\) and \(y\)`, String.raw`\[z\]`].join(newline);
+    const expected = ['$$', 'X=\\begin{bmatrix}', '1&2', '\\end{bmatrix}', '$$', '$x+1$ and $y$', '$$z$$'].join(newline);
+    assert.equal(clean(input), expected);
+    assert.deepEqual(convertRules(expected, options()), { text: expected, reasons: [] });
+  }
+  assert.equal(clean(String.raw`\[\] \(\)`), '$$$$ $$');
+  assert.equal(clean('\\(x\ny\\)'), '\\(x\ny\\)');
+});
+
+test('new formulas are protected from later regex and builtin rules, in pipeline order', () => {
+  const opts = options();
+  opts.spelling = true; opts.spellingTarget = 'us'; opts.joinWrappedLines = true;
+  opts.pipeline!.push({ kind: 'regex', id: 'late', name: 'Late', enabled: true, pattern: 'ofthe|colour', replacement: 'BROKEN', flags: 'g' });
+  const input = '\\[\nofthe colour\n• item\n\\] \\(ofthe colour\\)';
+  const expected = '$$\nofthe colour\n• item\n$$ $ofthe colour$';
+  assert.equal(convertRules(input, opts).text, expected);
+  // Disabling/deleting the examples makes these ordinary, editable spans again.
+  opts.pipeline = opts.pipeline!.filter(rule => !['example-display-math', 'example-inline-math', 'late'].includes(rule.id));
+  assert.ok(convertRules(String.raw`\(ofthe colour\)`, opts).text.includes('of the color'));
+  const custom = { kind: 'regex' as const, id: 'create', name: 'Create', enabled: true, pattern: 'FORMULA', replacement: '$$$$ofthe$$$$', flags: 'g' };
+  opts.pipeline = [custom, { kind: 'builtin', id: 'words' }];
+  assert.equal(convertRules('FORMULA', opts).text, '$$ofthe$$');
+});
+
+test('formula examples respect code, YAML, links and existing dollar math protection', () => {
+  const literal = String.raw`\[ofthe\] \(colour\)`;
+  const protectedInput = [
+    '---\nformula: ' + literal + '\n---',
+    '```latex\n' + literal + '\n```', '`' + literal + '`',
+    '[' + literal + '](https://example.com)', '![[note|' + literal + ']]',
+    '$$\n' + literal + '\n$$', '$' + literal + '$'
+  ].join('\n\n');
+  assert.deepEqual(convertRules(protectedInput, options()), { text: protectedInput, reasons: [] });
+  assert.equal(clean(protectedInput + '\n\n' + literal), protectedInput + '\n\n$$ofthe$$ $colour$');
+  assert.equal(convertRules('\\[\nx\n\\]', options(), { beforeCursor: '> ' }).text, '$$\n> x\n> $$');
 });

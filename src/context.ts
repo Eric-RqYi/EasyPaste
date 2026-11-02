@@ -22,8 +22,7 @@ export function isProtectedContext(beforeCursor: string): boolean {
   const last = lines[lines.length - 1] ?? '';
   const backticks = last.match(/(?<!\\)`+/g) ?? [];
   const dollars = last.match(/(?<!\\)\$/g) ?? [];
-  const latex = beforeCursor.lastIndexOf('\\[') > beforeCursor.lastIndexOf('\\]') || last.lastIndexOf('\\(') > last.lastIndexOf('\\)');
-  return yaml || Boolean(fence) || math || backticks.length % 2 === 1 || dollars.length % 2 === 1 || latex;
+  return yaml || Boolean(fence) || math || backticks.length % 2 === 1 || dollars.length % 2 === 1;
 }
 
 /** The quote prefix belongs to the current line, not to preceding callout text. */

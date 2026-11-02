@@ -18,6 +18,6 @@ test('blocks edits and note switches during preview', () => {
   assert.throws(() => new EditTarget(editor(), () => false).apply('wrong'), /已编辑/);
 });
 test('automatic paste skips code, frontmatter, inline and display math', () => {
-  for (const input of ['```ts\n', '~~~\nabc', '---\nkey: ', 'text `code ', '$x', '$$\nx', '\\[\nx', '\\(x']) assert.equal(isProtectedContext(input), true, input);
-  for (const input of ['plain text', '```\ncode\n```\n', '---\nkey: value\n---\n', '$x$ text ', '$$\nx\n$$\n']) assert.equal(isProtectedContext(input), false, input);
+  for (const input of ['```ts\n', '~~~\nabc', '---\nkey: ', 'text `code ', '$x', '$$\nx']) assert.equal(isProtectedContext(input), true, input);
+  for (const input of ['plain text', '```\ncode\n```\n', '---\nkey: value\n---\n', '$x$ text ', '$$\nx\n$$\n', '\\[\nx', '\\(x']) assert.equal(isProtectedContext(input), false, input);
 });

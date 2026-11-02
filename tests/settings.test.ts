@@ -124,7 +124,7 @@ test('examples migrate once and remain edited or deleted after reload', () => {
   delete rules.examplesVersion;
   rules.pipeline = [{ kind: 'builtin', id: 'words' }];
   const migrated = loadSettings({ rules });
-  assert.equal(migrated.rules.pipeline?.filter(rule => rule.kind === 'regex').length, 2);
+  assert.equal(migrated.rules.pipeline?.filter(rule => rule.kind === 'regex').length, 4);
   const example = migrated.rules.pipeline!.find(rule => rule.kind === 'regex');
   if (example?.kind === 'regex') example.pattern = 'edited';
   assert.deepEqual(loadSettings(JSON.parse(JSON.stringify(migrated))), migrated);
@@ -141,5 +141,25 @@ test('older settings gain the enabled callout builtin once while retaining rule 
   assert.equal(migrated.rules.pasteIntoCallout, true);
   assert.equal(migrated.rules.pipeline!.at(-1)!.id, 'pasteIntoCallout');
   migrated.rules.pasteIntoCallout = false;
+  assert.deepEqual(loadSettings(JSON.parse(JSON.stringify(migrated))), migrated);
+});
+
+test('v1 settings gain formula examples once before builtins without restoring deleted old examples', () => {
+  const rules = structuredClone(DEFAULT_SETTINGS.rules);
+  rules.examplesVersion = 1;
+  const custom = { kind: 'regex' as const, id: 'custom', name: 'My rule', enabled: false,
+    pattern: String.raw`\\\[([\s\S]*?)\\\]`, replacement: '$$$$$1$$$$', flags: 'g' };
+  rules.pipeline = [custom, { kind: 'builtin', id: 'lists' }, { kind: 'builtin', id: 'words' }];
+  const migrated = loadSettings({ rules });
+  assert.equal(migrated.rules.examplesVersion, 2);
+  assert.deepEqual(migrated.rules.pipeline!.slice(0, 5).map(rule => rule.id), ['custom', 'example-display-math', 'example-inline-math', 'lists', 'words']);
+  assert.deepEqual(migrated.rules.pipeline![0], custom);
+  assert.ok(!migrated.rules.pipeline!.some(rule => rule.id === 'example-slides-wrapper' || rule.id === 'example-list-blank-lines'));
+  assert.deepEqual(loadSettings(JSON.parse(JSON.stringify(migrated))), migrated);
+  const display = migrated.rules.pipeline!.find(rule => rule.id === 'example-display-math')!;
+  assert.equal(display.kind, 'regex');
+  if (display.kind !== 'regex') throw new Error('Expected regex rule');
+  display.enabled = false; display.pattern = 'edited'; display.replacement = String.raw`$$$$\n$1\n$$$$`;
+  migrated.rules.pipeline = migrated.rules.pipeline!.filter(rule => rule.id !== 'example-inline-math');
   assert.deepEqual(loadSettings(JSON.parse(JSON.stringify(migrated))), migrated);
 });

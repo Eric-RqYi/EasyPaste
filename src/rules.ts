@@ -15,7 +15,7 @@ function followsLineHyphen(text: string, offset: number): boolean {
   return text[at] === '-' && /[A-Za-z]/.test(text[at - 1] ?? '');
 }
 /** Protect syntax whose spaces, hyphens and markers are meaningful. */
-export function protectMarkdown(input: string): { text: string; restore: (text: string, continuationPrefix?: string) => string } {
+export function protectMarkdown(input: string) {
   const saved: string[] = [];
   // Choose a sentinel absent from input; saved text is never processed by rules.
   let prefix = '\uE000EP';
@@ -26,31 +26,40 @@ export function protectMarkdown(input: string): { text: string; restore: (text: 
     (_all, newline: string) => {
       return newline + keep(_all.slice(newline.length));
     });
-  text = text.replace(/\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|(`+)[^\n]*?\1|(?<![\\$])\$(?!\$)[^\n$]+\$|!?\[[^\]\n]*\]\([^\n)]*\)|!?\[\[[^\]\n]+\]\]|https?:\/\/[^\s<>]+|<[^>\n]+>/g, keep);
+  const math = /\$\$[\s\S]*?\$\$|(?<![\\$])\$(?!\$)[^\n$]+\$/;
+  const syntax = /(`+)[^\n]*?\1|!?\[(?:\\.|[^\]\\\n])*\]\((?:\\.|[^\n)\\])*\)|!?\[\[(?:\\.|[^\]\\\n])+\]\]|https?:\/\/[^\s<>]+|<[^>\n]+>/;
+  text = text.replace(new RegExp(`${math.source}|${syntax.source}`, 'g'), keep);
   const token = new RegExp(`${prefix}(\\d+)\uE001`, 'g');
-  return { text, restore: (value, continuationPrefix = '') => value.replace(token, (_m, n: string) => saved[Number(n)].replace(/\n/g, '\n' + continuationPrefix)) };
+  return {
+    text,
+    replaceUnprotected: (pattern: RegExp, replacement: string) => text.split(new RegExp(`(${prefix}\\d+\uE001)`, 'g'))
+      .map((chunk, index) => index % 2 ? chunk : chunk.replace(new RegExp(pattern), replacement)).join(''),
+    restore: (value: string, continuationPrefix = '') => value.replace(token, (_m, n: string) => saved[Number(n)].replace(/\n/g, '\n' + continuationPrefix))
+  };
 }
 
 export interface RuleContext { beforeCursor: string; lineBeforeCursor?: string }
 
 export function convertRules(input: string, options: RuleOptions, context?: RuleContext, t: Translator = defaultT): RuleResult {
   const newline = input.includes('\r\n') && !/(?<!\r)\n/.test(input) ? '\r\n' : '\n';
-  const protectedText = protectMarkdown(input.replace(/\r\n/g, '\n'));
-  let text = protectedText.text;
+  let text = input.replace(/\r\n/g, '\n');
   const reasons = new Set<string>();
   let continuationPrefix = '';
   let firstLineSeparator = '';
   const update = (next: string, reason: string) => { if (next !== text) reasons.add(reason); text = next; };
   const pipeline = options.pipeline ?? BUILTIN_RULE_ORDER.map(id => ({ kind: 'builtin' as const, id }));
   for (const rule of pipeline) {
+    if (rule.kind === 'regex' ? !rule.enabled || regexError(rule.pattern, rule.flags, t) : !options[rule.id]) continue;
+    // Recompute protection for each step: formulas created by regex rules must
+    // remain protected from later builtins and custom rules.
+    const protectedText = protectMarkdown(text);
+    text = protectedText.text;
     if (rule.kind === 'regex') {
-      if (!rule.enabled || regexError(rule.pattern, rule.flags, t)) continue;
       // Process only unprotected spans so broad expressions cannot destroy Markdown sentinels.
-      const chunks = text.split(/(\uE000EPX*\d+\uE001)/g);
-      update(chunks.map((chunk, index) => index % 2 ? chunk : chunk.replace(new RegExp(rule.pattern, rule.flags), replacementText(rule.replacement))).join(''), t('reason.regex', { name: ruleName(rule, t) }));
+      update(protectedText.replaceUnprotected(new RegExp(rule.pattern, rule.flags), replacementText(rule.replacement)), t('reason.regex', { name: ruleName(rule, t) }));
+      text = protectedText.restore(text);
       continue;
     }
-    if (!options[rule.id]) continue;
     if (rule.id === 'pasteIntoCallout') {
       const lineBeforeCursor = context?.lineBeforeCursor ?? context?.beforeCursor.split('\n').at(-1) ?? '';
       const linePrefix = calloutPrefix(lineBeforeCursor);
@@ -95,8 +104,9 @@ export function convertRules(input: string, options: RuleOptions, context?: Rule
         return previous.trimEnd() + ' ';
       }), t('reason.joinLines'));
     }
+    text = protectedText.restore(text);
   }
-  let result = protectedText.restore(text);
+  let result = text;
   // Quote the final output, including new lines created by lists or custom rules.
   // Restoring protected spans first also keeps multiline code/math inside the callout.
   if (continuationPrefix && result.includes('\n')) {
