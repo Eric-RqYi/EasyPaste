@@ -3,7 +3,7 @@ import { calloutPrefix } from './context';
 import { BUILTIN_RULE_ORDER, ruleName, regexError, replacementText, type RuleOptions } from './settings';
 import { wordRepair } from './words';
 import { convertSpelling } from './spelling';
-import { markerOf, normalizeLists } from './lists';
+import { alignPastedList, markerOf, normalizeLists } from './lists';
 
 export interface RuleResult { text: string; reasons: string[] }
 function followsLineHyphen(text: string, offset: number): boolean {
@@ -46,6 +46,8 @@ export function convertRules(input: string, options: RuleOptions, context?: Rule
   const reasons = new Set<string>();
   let continuationPrefix = '';
   let firstLineSeparator = '';
+  let alignList = false;
+  const lineBeforeCursor = context?.lineBeforeCursor ?? context?.beforeCursor.split('\n').at(-1) ?? '';
   const update = (next: string, reason: string) => { if (next !== text) reasons.add(reason); text = next; };
   const pipeline = options.pipeline ?? BUILTIN_RULE_ORDER.map(id => ({ kind: 'builtin' as const, id }));
   for (const rule of pipeline) {
@@ -61,7 +63,6 @@ export function convertRules(input: string, options: RuleOptions, context?: Rule
       continue;
     }
     if (rule.id === 'pasteIntoCallout') {
-      const lineBeforeCursor = context?.lineBeforeCursor ?? context?.beforeCursor.split('\n').at(-1) ?? '';
       const linePrefix = calloutPrefix(lineBeforeCursor);
       if (linePrefix) {
         continuationPrefix = linePrefix + (linePrefix.endsWith('>') ? ' ' : '');
@@ -95,7 +96,8 @@ export function convertRules(input: string, options: RuleOptions, context?: Rule
         options.spellingTarget === 'us' ? t('reason.spellingUS') : t('reason.spellingGB'));
     }
     if (rule.id === 'lists') {
-      update(normalizeLists(text, options.indentSize), t('reason.lists'));
+      update(normalizeLists(text, options.indentSize, lineBeforeCursor), t('reason.lists'));
+      alignList = true;
     }
     if (rule.id === 'joinWrappedLines') {
       update(text.replace(/([^\n]+)\n(?=\S)/g, (whole, previous: string, offset: number, source: string) => {
@@ -107,6 +109,12 @@ export function convertRules(input: string, options: RuleOptions, context?: Rule
     text = protectedText.restore(text);
   }
   let result = text;
+  // Keep the first marker available to later rules (notably wrapped-line joining).
+  // Apply the captured destination after restoring protected multiline content.
+  if (alignList) {
+    result = alignPastedList(result, lineBeforeCursor);
+    if (result !== text) reasons.add(t('reason.lists'));
+  }
   // Quote the final output, including new lines created by lists or custom rules.
   // Restoring protected spans first also keeps multiline code/math inside the callout.
   if (continuationPrefix && result.includes('\n')) {

@@ -29,6 +29,75 @@ test('preserves explicit indentation and numbered item content width', () => {
   assert.equal(clean('  • A\n    ◦ B\n    wrap\n  • C'), '  - A\n      - B\n        wrap\n  - C');
   assert.equal(clean('9) nine\n10) ten\nwrapped'), '9. nine\n10. ten\n    wrapped');
 });
+test('list paste reuses existing bullet or number and aligns inferred siblings and children', () => {
+  const opts = options(); opts.words = false;
+  const source = '• Parent\nwrap\n○ Child\nchild wrap\n• Next';
+  const expected = 'Parent\n      wrap\n        - Child\n          child wrap\n    - Next';
+  for (const prefix of ['    - ', '    + existing text: ', '    * ', '    7. ', '    7) existing text ']) {
+    const result = convertRules(source, opts, { beforeCursor: 'Earlier\n' + prefix });
+    assert.equal(result.text, prefix.includes('7') ? expected.replace('      wrap', '       wrap') : expected, prefix);
+    assert.ok(result.reasons.length);
+  }
+  assert.equal(convertRules('1) First\n2) Second', opts, { beforeCursor: '    9. ' }).text,
+    'First\n    2. Second');
+  assert.equal(convertRules('- Single', opts, { beforeCursor: '- ' }).text, 'Single');
+});
+
+test('list paste uses the destination number width for first-item continuation and child nesting', () => {
+  const opts = options(); opts.words = false; opts.indentSize = 2;
+  assert.equal(convertRules('- First\nwrap\n  - Child\n  child wrap\n- Next', opts,
+    { beforeCursor: '    1000. ' }).text,
+  'First\n          wrap\n          - Child\n            child wrap\n    - Next');
+  assert.equal(convertRules('- First\n- Next', opts,
+    { beforeCursor: '  123456789. ' }).text, 'First\n  - Next');
+});
+
+test('list paste offsets source indentation instead of adding it twice and preserves tabs and CRLF', () => {
+  const opts = options(); opts.words = false;
+  assert.equal(convertRules('  • Parent\n    ◦ Child\n    wrap\n  • Next', opts,
+    { beforeCursor: '        - ' }).text, 'Parent\n            - Child\n              wrap\n        - Next');
+  assert.equal(convertRules('\t- First\n\t\t- Child\n\t- Next', opts,
+    { beforeCursor: '\t- ' }).text, 'First\n\t    - Child\n\t- Next');
+  assert.equal(convertRules('1. First\r\n2. Second\r\n', opts,
+    { beforeCursor: '  3. ' }).text, 'First\r\n  2. Second\r\n');
+  assert.equal(convertRules('• First• Next', opts, { beforeCursor: '  - ' }).text, 'First\n  - Next');
+  assert.equal(convertRules('    - Child\n- Parent', opts, { beforeCursor: '        - ' }).text,
+    'Child\n    - Parent');
+});
+
+test('list paste uses the explicit insertion snapshot and composes with quote prefixes in either rule order', () => {
+  for (const calloutFirst of [false, true]) {
+    const opts = options(); opts.words = false;
+    if (calloutFirst) opts.pipeline = [{ kind: 'builtin', id: 'pasteIntoCallout' },
+      ...opts.pipeline!.filter(rule => rule.id !== 'pasteIntoCallout')];
+    assert.equal(convertRules('• Parent\n○ Child\n• Next', opts,
+      { beforeCursor: 'Unrelated', lineBeforeCursor: '  > >     - existing ' }).text,
+    'Parent\n  > >         - Child\n  > >     - Next');
+  }
+});
+
+test('list paste leaves protected content intact and wrapped lines still respect the first list item', () => {
+  const opts = options(); opts.words = false; opts.joinWrappedLines = true;
+  const source = '- First\nwrap\n    ```\n    a - b\n      x\n    ```\n- Next';
+  assert.equal(convertRules(source, opts, { beforeCursor: '  - ' }).text,
+    'First\n    wrap\n      ```\n      a - b\n        x\n      ```\n  - Next');
+  assert.equal(convertRules('```\n- code\n```', opts, { beforeCursor: '- ' }).text, '```\n- code\n```');
+  assert.equal(convertRules('- $a-b$\n- `x-y`', opts, { beforeCursor: '  - ' }).text,
+    '$a-b$\n  - `x-y`');
+});
+
+test('list context repair needs an enabled list rule, a destination marker and a first-line list', () => {
+  const opts = options(); opts.words = false;
+  const source = '- First\n- Next';
+  for (const prefix of ['', '    ', 'ordinary - ', 'text 1. ', '-missing space', '--- ', '\\- ', '# heading ']) {
+    assert.equal(convertRules(source, opts, { beforeCursor: prefix }).text, source, prefix);
+  }
+  assert.equal(convertRules('First\n\nSecond', opts, { beforeCursor: '    - ' }).text, 'First\n\nSecond');
+  opts.lists = false;
+  assert.deepEqual(convertRules(source, opts, { beforeCursor: '    - ' }), { text: source, reasons: [] });
+  opts.lists = true; opts.pipeline = [];
+  assert.equal(convertRules(source, opts, { beforeCursor: '    - ' }).text, source);
+});
 test('numeric/alpha/roman markers support mixed nesting and parent reset', () => {
   assert.equal(clean('1) Parent\na) Child\nb) Child two\n2) Parent two'), '1. Parent\n    1. Child\n    2. Child two\n2. Parent two');
   assert.equal(clean('i) one\nii) two\niii) three'), '1. one\n2. two\n3. three');
@@ -152,6 +221,81 @@ test('restores consecutive inline numeric, alphabetic, roman and CJK ordered mar
     '简介\n1. Parent\n    1. Child\n    2. Child two\n2. Parent two');
   assert.equal(clean('简介 1) Parent i) One ii) Two iii) Three 2) Next'),
     '简介\n1. Parent\n    1. One\n    2. Two\n    3. Three\n2. Next');
+});
+
+test('restores the tokenization slide list glued to a closing parenthesis', () => {
+  const source = '1. Tokenize sentence, convert tokens into integer indices from 𝑉 (one-hot)2. Embed each token via a look-up table';
+  const expected = '1. Tokenize sentence, convert tokens into integer indices from 𝑉 (one-hot)\n2. Embed each token via a look-up table';
+  assert.equal(clean(source), expected);
+  assert.equal(clean(expected), expected);
+  const opts = options(); opts.words = false;
+  const result = convertRules(source, opts);
+  assert.equal(result.text, expected);
+  assert.ok(result.reasons.length > 0);
+  opts.lists = false;
+  assert.equal(convertRules(source, opts).text, source);
+});
+
+test('restores consecutive numeric items after closing brackets with existing delimiters', () => {
+  for (const body of ['(note)', '[note]', '{note}', '（注）', '【注】']) {
+    for (const delimiter of ['.', ')', '、', '．']) {
+      const source = `简介 9${delimiter} First ${body}10${delimiter} Second ${body}11${delimiter} Third`;
+      const expected = `简介\n9. First ${body}\n10. Second ${body}\n11. Third`;
+      assert.equal(clean(source), expected);
+      assert.equal(clean(expected), expected);
+    }
+  }
+  assert.equal(clean('1. First (note)2. Second\r\n3. Third'),
+    '1. First (note)\r\n2. Second\r\n3. Third');
+});
+
+test('keeps ambiguous numeric text and nonconsecutive bracket-adjacent markers intact', () => {
+  const opts = options(); opts.words = false;
+  for (const source of [
+    'See (section)2. Notes follow.', '1. First (note)3. Third',
+    '1. First (note)2.Second', '版本（稳定）1.2.3 和 1.2.4',
+    '1. First (note)\n\n2. Second (note)4. Fourth',
+    '简介 a) First (note)b) Second', '简介 i) First (note)ii) Second'
+  ]) assert.equal(convertRules(source, opts).text, source);
+});
+
+test('explicit consecutive numeric markers ignore every preceding character boundary', () => {
+  const opts = options(); opts.words = false;
+  for (const delimiter of ['.', ')']) {
+    for (const prefix of ['word', '中文', '_', ':', '/', '\\', ')', '🙂']) {
+      const source = `Lead${prefix}1${delimiter} First${prefix}2${delimiter} Second`;
+      const expected = `Lead${prefix}\n1. First${prefix}\n2. Second`;
+      assert.equal(convertRules(source, opts).text, expected);
+      assert.equal(convertRules(expected, opts).text, expected);
+    }
+  }
+  assert.equal(clean('1. First word2. Second'), '1. First word\n2. Second');
+  assert.equal(convertRules('ID_1. First ID_2. Second', opts).text, 'ID_\n1. First ID_\n2. Second');
+  assert.equal(clean('9) Firstword10) Secondword11) Third'),
+    '9. Firstword\n10. Secondword\n11. Third');
+  assert.equal(clean('1. Firstword2. Second\r\n3. Third'),
+    '1. Firstword\r\n2. Second\r\n3. Third');
+});
+
+test('relaxed numeric boundaries retain sequence, following-space and other marker checks', () => {
+  const opts = options(); opts.words = false;
+  for (const source of [
+    'See word2. Notes follow.', 'Lead1. Firstword3. Third',
+    'Lead1) Firstword3) Third', 'Lead1. Firstword2.Second',
+    'Lead1) Firstword2)Second', 'Lead1. First\n\nword2. Second',
+    'Lead1、 Firstword2、 Second', 'Lead1． Firstword2． Second',
+    'Leada) Firstwordb) Second', 'Leadi) Firstwordii) Second',
+    'v1.2 and v1.3', 'v1.2.3 and v1.2.4',
+    '价格1.2 元和价格1.3 元'
+  ]) assert.equal(convertRules(source, opts).text, source);
+  opts.lists = false;
+  assert.equal(convertRules('1. Firstword2. Second', opts).text, '1. Firstword2. Second');
+});
+
+test('relaxed numeric boundaries leave protected content intact', () => {
+  const source = '`word1. Firstword2. Second` $word1. Firstword2. Second$ [word1. Firstword2. Second](https://example.com)';
+  assert.equal(clean(source), source);
+  assert.equal(clean('`note`1. First $x$2. Second'), '`note`\n1. First $x$\n2. Second');
 });
 
 test('uses explicit numeric ancestry for nested ordered lists and returns to parent siblings', () => {

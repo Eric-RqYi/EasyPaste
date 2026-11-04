@@ -517,6 +517,78 @@ test('automatic rule and LLM results use the captured insertion indentation, not
   modal.close();
 });
 
+test('existing list markers trigger preview for canonical Markdown and rule toggles retain the captured nesting', async () => {
+  for (const prefix of ['    - ', '    - existing body: ', '    7. ']) {
+    const h = await host();
+    h.editor.value = prefix;
+    h.editor.from = h.editor.to = prefix.length;
+    const source = '- First\n    - Child\n- Next';
+    const expected = 'First\n        - Child\n    - Next';
+    let prevented = false;
+    h.events['editor-paste']({ defaultPrevented: false, clipboardData: {
+      files: [], items: [], getData: (type: string) => type === 'text/plain' ? source : ''
+    }, preventDefault: () => { prevented = true; } }, h.editor, h.view);
+    assert.equal(prevented, true);
+    assert.equal(h.editor.value, prefix);
+    const modal = h.plugin.modal as Modal;
+    const result = modal.contentEl.find('编辑转换结果');
+    assert.equal(result.value, expected);
+    h.editor.from = h.editor.to = 0;
+    const panel = modal.modalEl.find('快速配置规则');
+    const index = h.plugin.settings.rules.pipeline.findIndex((rule: any) => rule.id === 'lists');
+    panel.querySelectorAll('input')[index].events.change(false);
+    assert.equal(result.value, source);
+    panel.querySelectorAll('input')[index].events.change(true);
+    assert.equal(result.value, expected);
+    assert.equal(h.requests.length, 0);
+    modal.contentEl.find('确认应用').click();
+    assert.equal(h.editor.value, prefix + expected);
+  }
+});
+
+test('list paste into a multiline quoted note replaces the captured selection and keeps the quote indentation', async () => {
+  const h = await host();
+  const prefix = '>     10. existing: ';
+  const original = 'Intro\n> [!note]\n' + prefix + 'replace me';
+  h.editor.value = original;
+  const from = { line: 2, ch: prefix.length };
+  const to = { line: 2, ch: prefix.length + 'replace me'.length };
+  const offset = (pos: { line: number; ch: number }) => original.split('\n').slice(0, pos.line).reduce((n, line) => n + line.length + 1, 0) + pos.ch;
+  h.editor.getCursor = which => ({ ...(which === 'to' ? to : from) });
+  h.editor.getLine = (index = 0) => original.split('\n')[index];
+  h.editor.getRange = (start: any, end: any) => original.slice(offset(start), offset(end));
+  h.editor.replaceRange = (text: string, start: any, end: any) => { h.editor.value = original.slice(0, offset(start)) + text + original.slice(offset(end)); };
+  h.events['editor-paste']({ defaultPrevented: false, clipboardData: {
+    files: [], items: [], getData: (type: string) => type === 'text/plain' ? '1) First\n2) Next' : ''
+  }, preventDefault() {} }, h.editor, h.view);
+  const modal = h.plugin.modal as Modal;
+  assert.equal(modal.contentEl.find('编辑转换结果').value, 'First\n>     2. Next');
+  assert.equal(h.editor.value, original);
+  modal.contentEl.find('确认应用').click();
+  assert.equal(h.editor.value, 'Intro\n> [!note]\n' + prefix + 'First\n>     2. Next');
+});
+
+test('list paste handles HTML and single items while original, cancel and disabled rules retain existing behavior', async () => {
+  for (const action of ['original', 'cancel', 'disabled', 'handled', 'apply']) {
+    const h = await host();
+    h.editor.value = '  3. ';
+    h.editor.from = h.editor.to = h.editor.value.length;
+    h.setClipboardMarkdown('- First');
+    h.plugin.settings.rules.lists = action !== 'disabled';
+    let prevented = false;
+    h.events['editor-paste']({ defaultPrevented: action === 'handled', clipboardData: {
+      files: [], items: [], getData: (type: string) => type === 'text/html' ? '<ul><li>First</li></ul>' : '- First'
+    }, preventDefault: () => { prevented = true; } }, h.editor, h.view);
+    assert.equal(prevented, !['disabled', 'handled'].includes(action), action);
+    if (!prevented) { assert.equal(h.plugin.modal, undefined); continue; }
+    const modal = h.plugin.modal as Modal;
+    assert.equal(modal.contentEl.find('编辑转换结果').value, 'First');
+    if (action === 'cancel') modal.close();
+    else modal.contentEl.find(action === 'original' ? '粘贴原文' : '确认应用').click();
+    assert.equal(h.editor.value, action === 'cancel' ? '  3. ' : action === 'original' ? '  3. - First' : '  3. First');
+  }
+});
+
 test('late Markdown renders never replace a newer edit or update a closed preview', async () => {
   const h = await host('ofthe');
   h.delayRenders();

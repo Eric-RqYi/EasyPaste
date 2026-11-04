@@ -6,7 +6,7 @@ An Obsidian plugin that turn content from PDFs, web pages or images into Obsidia
 
 ## Installation
 
-Requires **Obsidian 1.11.4+**.
+Latest release available [here](https://github.com/Eric-RqYi/EasyPaste/releases). Requires **Obsidian 1.11.4+**.
 
 1. Place the `easy-paste` folder from the release package in your vault’s `.obsidian/plugins/` directory.
 2. Enable EasyPaste under Obsidian → Settings → Community plugins.
@@ -27,13 +27,6 @@ The smart conversion window lets you edit the source text, add multiple images a
 Choose Simplified Chinese, English or Korean under **Plugin language** in EasyPaste settings. An open preview keeps the language it used when opened. Changing the interface language does not rewrite your content or custom prompts.
 
 ## Offline rules
-
-### Custom rules
-
-- Click **Add rule**, enter a name, match pattern, replacement text and match flags, then enable the rule.
-- Patterns use JavaScript regular expression syntax without the surrounding `/` characters. The default `g` flag replaces all matches; combine it with `i` to ignore case, `m` for multiline matching or `s` to match across line breaks. Replacement text supports capture groups such as `$1`, as well as `\n` for a line break, `\r` for a carriage return and `\t` for a tab. `\\` represents a literal backslash; `$$` inserts a literal `$`. Leave the replacement blank to delete matches.
-- Four editable, removable examples are enabled by default: two for Google Slides cleanup, plus `\[...\]` → `$$...$$` and single-line `\(...\)` → `$...$`. Formula examples run before built-in cleanup rules; upgrades add them once and retain later edits or deletions.
-- Only Obsidian `$...$` / `$$...$$` formulas are protected from cleanup, including formulas produced by earlier rules. Code, YAML and links remain protected. If you disable or move formula conversion below other rules, those earlier rules can modify text inside `\[...\]` / `\(...\)`.
 
 ### Splitting joined words and repairing hyphenation
 
@@ -76,7 +69,9 @@ Becomes:
 
 Original indentation takes priority when determining nesting. The configured nested-list indentation, 4 spaces by default, normalizes the result. At the same original indentation, a new line-start marker is inferred as the next nesting level; a previously seen marker returns to its corresponding level. Continuation lines align with the list item’s **text start column**, including items with multi-digit numbers. A regular paragraph after a blank line ends continuation indentation.
 
-When a multiline list is copied as a single paragraph, confirmed inline list markers are also split onto new lines and nesting is restored:
+When pasting a list after an existing bullet or number, the first pasted marker is removed. Following items align with the existing item's indentation while preserving inferred nesting. This is part of the list repair rule and also works inside callouts.
+
+When a multiline list is copied as a single paragraph, confirmed inline list markers are also split onto new lines and nesting is restored. Consecutive numeric markers ending in `.` or `)` accept any preceding character, such as `1. First2. Second`; whitespace after the marker is still required. For example:
 
 ```text
 Introduction • infor-mation 1) First 2) Second • repre-sentation
@@ -93,6 +88,14 @@ Introduction
 ```
 
 Inferring structure can be ambiguous when the source has lost its nesting information. Review and edit the result in the preview. Markers such as `i)` can represent either letters or Roman numerals; common Roman-numeral forms take precedence.
+
+### Custom rules
+
+- Click **Add rule**, enter a name, match pattern, replacement text and match flags, then enable the rule.
+- Patterns use JavaScript regular expression syntax without the surrounding `/` characters. The default `g` flag replaces all matches; combine it with `i` to ignore case, `m` for multiline matching or `s` to match across line breaks. Replacement text supports capture groups such as `$1`, as well as `\n` for a line break, `\r` for a carriage return and `\t` for a tab. `\\` represents a literal backslash; `$$` inserts a literal `$`. Leave the replacement blank to delete matches.
+- Four example rules are enabled by default: two for Google Slides cleanup, plus `\[...\]` → `$$...$$` and single-line `\(...\)` → `$...$`.
+
+
 
 ## API configuration
 

@@ -1,3 +1,5 @@
+import { calloutPrefix } from './context';
+
 interface Marker {
   indent: number;
   signature: string;
@@ -38,16 +40,18 @@ function candidatesOf(line: string): Candidate[] {
     const left = before.trimEnd().slice(-1);
     const right = after.trimStart()[0] ?? '';
     const gap = /^[ \t]*/.exec(after)![0];
-    if (!right || before.endsWith('\\')) continue;
+    const numeric = /^\d/.test(raw);
+    const explicitNumeric = numeric && /[.)]$/.test(raw);
+    if (!right || (!explicitNumeric && before.endsWith('\\'))) continue;
     const ordered = /^[\dA-Za-z]/.test(raw);
     let signature = raw;
     let marker = '-';
     let path: number[] | undefined;
     let barePath = false;
     if (ordered) {
-      // Avoid matching the tail of a word, decimal, version, date or section reference.
-      if (!anchored && !/[ \t]$/.test(before)) continue;
-      const numeric = /^\d/.test(raw);
+      // Numeric markers ending in . or ) rely on consecutive siblings, regardless
+      // of the preceding character. Other formats keep their existing boundaries.
+      if (!explicitNumeric && !anchored && !/[ \t]$/.test(before) && !(numeric && /\p{Pe}$/u.test(before))) continue;
       const delimiter = /[.)、．]$/.test(raw) ? raw.slice(-1) : '.';
       if (!gap && (!numeric || !/[、．]$/.test(raw))) continue;
       if (numeric) {
@@ -189,8 +193,12 @@ function layout(indentSize: number, seeds: Candidate[] = []) {
   return place;
 }
 
-function normalizeBlock(lines: string[], indentSize: number): string[] {
+function normalizeBlock(lines: string[], indentSize: number, firstMarker?: string): string[] {
   const byLine = lines.map(candidatesOf);
+  const first = byLine[0]?.find(item => item.anchored && !item.barePath);
+  // Keep the clipboard's style/path for inference, but use the existing marker's
+  // width for its first item's continuation column and minimum child indent.
+  if (first && firstMarker) first.marker = firstMarker;
   const confirmed = confirmedCandidates(byLine.flat());
   const place = layout(indentSize, byLine.flat().filter(item => item.anchored && confirmed.has(item)));
   const output: string[] = [];
@@ -216,14 +224,48 @@ function normalizeBlock(lines: string[], indentSize: number): string[] {
 }
 
 /** Blank lines and structural Markdown bound inference, so unrelated paragraphs do not share evidence. */
-export function normalizeLists(text: string, indentSize: number): string {
+export function normalizeLists(text: string, indentSize: number, lineBeforeCursor = ''): string {
   const output: string[] = [];
   let block: string[] = [];
-  const flush = () => { output.push(...normalizeBlock(block, indentSize)); block = []; };
+  const destination = listDestination(lineBeforeCursor);
+  const flush = () => { output.push(...normalizeBlock(block, indentSize, output.length ? undefined : destination?.[2])); block = []; };
   for (const line of text.split('\n')) {
     if (!line.trim() || structural(line)) { flush(); output.push(line); }
     else block.push(line);
   }
   flush();
   return output.join('\n');
+}
+
+function listDestination(lineBeforeCursor: string): RegExpExecArray | null {
+  const quote = calloutPrefix(lineBeforeCursor) ?? '';
+  return /^([ \t]*)([-+*]|\d{1,9}[.)])[ \t]+/.exec(lineBeforeCursor.slice(quote.length));
+}
+
+/** Reuse the destination marker after inferring the clipboard's own list hierarchy. */
+export function alignPastedList(text: string, lineBeforeCursor: string): string {
+  const destination = listDestination(lineBeforeCursor);
+  const lines = text.split('\n');
+  const first = /^([ \t]*)(?:[-+*]|\d{1,9}[.)])[ \t]+/.exec(lines[0]);
+  if (!destination || !first || structural(lines[0])) return text;
+  const baseIndent = width(first[1]);
+
+  // The editor already owns both the first line's indentation and its marker.
+  lines[0] = lines[0].slice(first[0].length);
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.trim()) continue;
+    // Remove only the clipboard's base indentation, preserving relative nesting,
+    // continuation columns and whitespace inside protected code/math blocks.
+    let at = 0;
+    let removed = 0;
+    while (removed < baseIndent && /[ \t]/.test(line[at] ?? '')) {
+      removed += line[at++] === '\t' ? 4 : 1;
+    }
+    const indent = removed < baseIndent
+      ? ' '.repeat(Math.max(0, width(destination[1]) + removed - baseIndent))
+      : destination[1];
+    lines[i] = indent + ' '.repeat(Math.max(0, removed - baseIndent)) + line.slice(at);
+  }
+  return lines.join('\n');
 }
